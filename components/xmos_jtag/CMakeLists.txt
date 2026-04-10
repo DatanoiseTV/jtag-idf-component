@@ -12,6 +12,8 @@ endif()
 set(requires
     "driver"
     "esp_driver_gpio"
+    "esp_timer"
+    "esp_rom"
 )
 
 if(CONFIG_XMOS_JTAG_BACKEND_PARLIO)

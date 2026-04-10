@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XMOS JTAG Flasher</title>
+<style>
+  :root {
+    --bg: #0e1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, 'Segoe UI', Roboto, monospace;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; padding: 1.5rem;
+  }
+  .container { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 1.5rem; letter-spacing: -0.02em; }
+  h1 span { color: var(--accent); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem;
+  }
+  .card-title {
+    font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text2); margin-bottom: 0.75rem;
+  }
+
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .info-item label { display: block; font-size: 0.7rem; color: var(--text2); }
+  .info-item .val {
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    font-size: 0.9rem; color: var(--text);
+  }
+  .info-item .val.id { color: var(--accent); }
+  .info-item .val.ok { color: var(--green); }
+  .info-item .val.err { color: var(--red); }
+
+  .segment-table {
+    width: 100%; border-collapse: collapse; font-size: 0.75rem;
+    font-family: monospace; margin-top: 0.5rem;
+  }
+  .segment-table th {
+    text-align: left; color: var(--text2); font-weight: 500;
+    padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border);
+  }
+  .segment-table td {
+    padding: 0.2rem 0.5rem; border-bottom: 1px solid var(--border);
+  }
+  .segment-table tr:last-child td { border-bottom: none; }
+
+  button {
+    display: inline-block; padding: 0.5rem 1.25rem;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--text);
+    font-size: 0.85rem; cursor: pointer; transition: 0.15s;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary {
+    background: var(--accent); color: var(--bg);
+    border-color: var(--accent); font-weight: 600;
+  }
+  button.primary:hover { background: #79c0ff; }
+  button.danger { border-color: var(--red); color: var(--red); }
+  button.danger:hover { background: var(--red); color: var(--bg); }
+
+  .btn-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+
+  .file-drop {
+    border: 2px dashed var(--border); border-radius: 8px;
+    padding: 2rem; text-align: center; cursor: pointer;
+    transition: 0.2s; position: relative;
+  }
+  .file-drop:hover, .file-drop.dragover {
+    border-color: var(--accent); background: rgba(88,166,255,0.05);
+  }
+  .file-drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .file-drop .icon { font-size: 2rem; margin-bottom: 0.5rem; }
+  .file-drop .hint { font-size: 0.8rem; color: var(--text2); }
+
+  .progress-bar {
+    height: 6px; background: var(--border); border-radius: 3px;
+    overflow: hidden; margin-top: 0.75rem;
+  }
+  .progress-bar .fill {
+    height: 100%; background: var(--accent); border-radius: 3px;
+    transition: width 0.3s; width: 0%;
+  }
+  .progress-bar .fill.done { background: var(--green); }
+  .progress-bar .fill.error { background: var(--red); }
+
+  .status-msg {
+    font-size: 0.8rem; color: var(--text2); margin-top: 0.5rem;
+    font-family: monospace;
+  }
+
+  .tag {
+    display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px;
+    font-size: 0.7rem; font-weight: 600;
+  }
+  .tag.xe { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag.elf { background: rgba(63,185,80,0.15); color: var(--green); }
+  .tag.bin { background: rgba(210,153,34,0.15); color: var(--yellow); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1><span>XMOS</span> JTAG Flasher</h1>
+
+  <!-- Device Info -->
+  <div class="card">
+    <div class="card-title">Device</div>
+    <div class="info-grid">
+      <div class="info-item">
+        <label>IDCODE</label>
+        <div class="val id" id="idcode">--</div>
+      </div>
+      <div class="info-item">
+        <label>Family</label>
+        <div class="val" id="family">--</div>
+      </div>
+      <div class="info-item">
+        <label>Tiles</label>
+        <div class="val" id="tiles">--</div>
+      </div>
+      <div class="info-item">
+        <label>Revision</label>
+        <div class="val" id="revision">--</div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button onclick="identify()">Identify Device</button>
+    </div>
+  </div>
+
+  <!-- Firmware Upload -->
+  <div class="card">
+    <div class="card-title">Firmware</div>
+    <div class="file-drop" id="dropzone">
+      <input type="file" id="fileInput" accept=".xe,.bin,.elf">
+      <div class="icon">&#8679;</div>
+      <div>Drop <b>.xe</b> or <b>.bin</b> file here</div>
+      <div class="hint">or click to browse</div>
+    </div>
+    <div id="fw-info" style="display:none; margin-top: 0.75rem;">
+      <div class="info-grid">
+        <div class="info-item">
+          <label>File</label>
+          <div class="val" id="fw-name">--</div>
+        </div>
+        <div class="info-item">
+          <label>Type</label>
+          <div class="val" id="fw-type">--</div>
+        </div>
+        <div class="info-item">
+          <label>Size</label>
+          <div class="val" id="fw-size">--</div>
+        </div>
+        <div class="info-item">
+          <label>Code</label>
+          <div class="val" id="fw-code">--</div>
+        </div>
+        <div class="info-item">
+          <label>Tiles</label>
+          <div class="val" id="fw-tiles">--</div>
+        </div>
+        <div class="info-item">
+          <label>Segments</label>
+          <div class="val" id="fw-segs">--</div>
+        </div>
+        <div class="info-item">
+          <label>Entry Tile 0</label>
+          <div class="val id" id="fw-entry0">--</div>
+        </div>
+        <div class="info-item">
+          <label>Entry Tile 1</label>
+          <div class="val id" id="fw-entry1">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flash Controls -->
+  <div class="card">
+    <div class="card-title">Program</div>
+    <div class="btn-row">
+      <button class="primary" id="btn-ram" onclick="flash('ram')" disabled>
+        Load to RAM
+      </button>
+      <button class="danger" id="btn-flash" onclick="flash('flash')" disabled>
+        Write SPI Flash
+      </button>
+    </div>
+    <div class="progress-bar" id="pbar" style="display:none">
+      <div class="fill" id="pfill"></div>
+    </div>
+    <div class="status-msg" id="status"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function fmt(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+async function identify() {
+  try {
+    const r = await fetch('/api/identify');
+    const d = await r.json();
+    $('idcode').textContent = d.idcode;
+    $('family').textContent = d.family;
+    $('family').className = 'val ' + (d.ok ? 'ok' : 'err');
+    $('tiles').textContent = d.tiles;
+    $('revision').textContent = d.revision;
+    if (d.ok) updateButtons();
+  } catch(e) {
+    $('family').textContent = 'Error: ' + e.message;
+    $('family').className = 'val err';
+  }
+}
+
+function updateButtons() {
+  const ok = $('family').classList.contains('ok') && $('fw-info').style.display !== 'none';
+  $('btn-ram').disabled = !ok;
+  $('btn-flash').disabled = !ok;
+}
+
+const dropzone = $('dropzone');
+const fileInput = $('fileInput');
+
+['dragenter','dragover'].forEach(e =>
+  dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.classList.add('dragover'); }));
+['dragleave','drop'].forEach(e =>
+  dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.classList.remove('dragover'); }));
+
+dropzone.addEventListener('drop', ev => {
+  if (ev.dataTransfer.files.length) upload(ev.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) upload(fileInput.files[0]);
+});
+
+async function upload(file) {
+  $('status').textContent = 'Uploading ' + file.name + '...';
+  $('fw-name').textContent = file.name;
+
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: file });
+    const d = await r.json();
+    if (!d.ok) throw new Error('Upload rejected');
+
+    const typeTag = { xe: 'xe', elf: 'elf', bin: 'bin' }[d.type] || 'bin';
+    $('fw-type').innerHTML = '<span class="tag ' + typeTag + '">' + d.type.toUpperCase() + '</span>';
+    $('fw-size').textContent = fmt(d.size);
+    $('fw-code').textContent = fmt(d.code_size);
+    $('fw-tiles').textContent = d.tiles;
+    $('fw-segs').textContent = d.segments;
+    $('fw-entry0').textContent = d.entry0;
+    $('fw-entry1').textContent = d.entry1;
+    $('fw-info').style.display = 'block';
+    $('status').textContent = 'Firmware ready.';
+    updateButtons();
+  } catch(e) {
+    $('status').textContent = 'Upload failed: ' + e.message;
+  }
+}
+
+let pollTimer = null;
+
+async function flash(mode) {
+  $('btn-ram').disabled = true;
+  $('btn-flash').disabled = true;
+  $('pbar').style.display = 'block';
+  $('pfill').style.width = '0%';
+  $('pfill').className = 'fill';
+  $('status').textContent = 'Starting...';
+
+  try {
+    await fetch('/api/flash?mode=' + mode, { method: 'POST' });
+    pollTimer = setInterval(pollStatus, 500);
+  } catch(e) {
+    $('status').textContent = 'Failed: ' + e.message;
+    updateButtons();
+  }
+}
+
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    $('status').textContent = d.status;
+
+    if (d.progress >= 0) {
+      $('pfill').style.width = d.progress + '%';
+    }
+
+    if (d.progress >= 100 || d.result < 0) {
+      clearInterval(pollTimer);
+      $('pfill').className = 'fill ' + (d.result === 0 ? 'done' : 'error');
+      updateButtons();
+    }
+  } catch(e) { /* ignore transient errors */ }
+}
+</script>
+</body>
+</html>
