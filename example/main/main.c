@@ -49,32 +49,47 @@ static const char *TAG = "xmos_web";
 #define WIFI_AP_MAX_CONN    2
 
 /*
- * JTAG pins -- adjust for your board.
+ * Pin assignment for Waveshare ESP32-P4-NANO:
  *
- * ESP32-P4-NANO exposed GPIOs (3.3V I/O):
- *   Left header:  4, 5, 20, 21, 22, 23, 32, 33, 36
- *   Right header: 2, 3, 6, 45, 46, 47, 48, 53, 54
- *   Ethernet uses GPIO28-35,49-52 (internal, not on headers).
+ *   JTAG (right header rows 7-10):
+ *     TCK=47, TMS=48, TDI=46, TDO=45, TRST=53, SRST=54
  *
- *   XMOS JTAG uses 1.8V levels. Use a level shifter with the
- *   LDO_VO4 pin (right header row 1) as the 1.8V reference.
+ *   SPI / iCE40 (left header rows 4,6,7,8 -- separate from JTAG):
+ *     SCK=23, MOSI=5, MISO=4, CS=20
+ *     CRESET=21, CDONE=22
  *
- * ESP32-S3: also 3.3V I/O, same level shifter requirement.
+ * Use a level shifter if the target needs 1.8V I/O (XMOS JTAG).
+ * LDO_VO4 (right header row 1) provides 1.8V for the shifter.
  */
 #if CONFIG_IDF_TARGET_ESP32P4
+/* JTAG -- right header */
 #define PIN_TCK             GPIO_NUM_47
 #define PIN_TMS             GPIO_NUM_48
 #define PIN_TDI             GPIO_NUM_46
 #define PIN_TDO             GPIO_NUM_45
 #define PIN_TRST            GPIO_NUM_53
 #define PIN_SRST            GPIO_NUM_54
+/* SPI / iCE40 -- left header */
+#define PIN_SPI_CLK         GPIO_NUM_23   /* L-Row 4 outer */
+#define PIN_SPI_MOSI        GPIO_NUM_5    /* L-Row 6 outer */
+#define PIN_SPI_MISO        GPIO_NUM_4    /* L-Row 6 inner */
+#define PIN_SPI_CS          GPIO_NUM_20   /* L-Row 7 outer */
+#define PIN_ICE40_CRESET    GPIO_NUM_21   /* L-Row 8 outer */
+#define PIN_ICE40_CDONE     GPIO_NUM_22   /* L-Row 8 inner */
 #else
+/* ESP32-S3 defaults */
 #define PIN_TCK             GPIO_NUM_12
 #define PIN_TMS             GPIO_NUM_13
 #define PIN_TDI             GPIO_NUM_14
 #define PIN_TDO             GPIO_NUM_11
 #define PIN_TRST            GPIO_NUM_NC
 #define PIN_SRST            GPIO_NUM_NC
+#define PIN_SPI_CLK         GPIO_NUM_5
+#define PIN_SPI_MOSI        GPIO_NUM_6
+#define PIN_SPI_MISO        GPIO_NUM_7
+#define PIN_SPI_CS          GPIO_NUM_8
+#define PIN_ICE40_CRESET    GPIO_NUM_9
+#define PIN_ICE40_CDONE     GPIO_NUM_10
 #endif
 
 /* ESP32-P4-NANO Ethernet (IP101GRI via RMII) */
@@ -381,30 +396,49 @@ static esp_err_t handler_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* mode: 0=ram, 1=flash, 2=cram (iCE40) */
 static void flash_task(void *arg)
 {
     int mode = (int)(intptr_t)arg;
     s_flash_progress = 0; s_flash_result = 0;
-    snprintf(s_flash_status, sizeof(s_flash_status), "Starting...");
-    esp_err_t err;
+    esp_err_t err = ESP_OK;
 
     if (mode == 0) {
+        /* XMOS: Load to RAM via JTAG */
         snprintf(s_flash_status, sizeof(s_flash_status), "Loading to RAM via JTAG...");
         s_flash_progress = 10;
         if (s_fw_len >= 4 && (s_fw_buf[0] == 'X' || s_fw_buf[0] == 0x7F))
             err = xmos_jtag_load_xe(s_jtag, s_fw_buf, s_fw_len, true);
         else
             err = xmos_jtag_load_raw(s_jtag, 0, s_fw_buf, s_fw_len, 0x00040000, 0x00080000);
-        if (err == ESP_OK) {
-            s_flash_progress = 100;
-            snprintf(s_flash_status, sizeof(s_flash_status), "Loaded to RAM OK");
-        } else {
-            s_flash_result = -1;
-            snprintf(s_flash_status, sizeof(s_flash_status), "Failed: %s", esp_err_to_name(err));
-        }
+    } else if (mode == 1) {
+        /* XMOS or iCE40: Write SPI flash */
+        snprintf(s_flash_status, sizeof(s_flash_status), "Writing SPI flash...");
+        s_flash_progress = 10;
+        xmos_spi_pins_t spi = {
+            .cs = PIN_SPI_CS, .clk = PIN_SPI_CLK,
+            .mosi = PIN_SPI_MOSI, .miso = PIN_SPI_MISO,
+            .wp = GPIO_NUM_NC, .hold = GPIO_NUM_NC,
+        };
+        err = xmos_spi_flash_program(s_jtag, &spi, s_fw_buf, s_fw_len, 0);
+    } else if (mode == 2) {
+        /* iCE40: Load to CRAM via SPI */
+        snprintf(s_flash_status, sizeof(s_flash_status), "Loading iCE40 CRAM via SPI...");
+        s_flash_progress = 10;
+        ice40_pins_t ice = {
+            .spi_cs = PIN_SPI_CS, .spi_clk = PIN_SPI_CLK,
+            .spi_mosi = PIN_SPI_MOSI, .spi_miso = PIN_SPI_MISO,
+            .creset = PIN_ICE40_CRESET, .cdone = PIN_ICE40_CDONE,
+        };
+        err = ice40_program_cram(&ice, s_fw_buf, s_fw_len, 3000);
+    }
+
+    if (err == ESP_OK) {
+        s_flash_progress = 100;
+        snprintf(s_flash_status, sizeof(s_flash_status), "Done");
     } else {
         s_flash_result = -1;
-        snprintf(s_flash_status, sizeof(s_flash_status), "SPI flash: provide stub or use direct SPI");
+        snprintf(s_flash_status, sizeof(s_flash_status), "Failed: %s", esp_err_to_name(err));
     }
     s_flash_progress = s_flash_result == 0 ? 100 : -1;
     vTaskDelete(NULL);
@@ -413,13 +447,16 @@ static void flash_task(void *arg)
 static esp_err_t handler_flash(httpd_req_t *req)
 {
     if (!s_fw_ready) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No firmware"); return ESP_FAIL; }
-    if (!s_identified) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Not identified"); return ESP_FAIL; }
     if (s_flash_progress >= 0 && s_flash_progress < 100) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "In progress"); return ESP_FAIL;
     }
-    char qs[16] = "ram";
+    char qs[32] = "ram";
     httpd_req_get_url_query_str(req, qs, sizeof(qs));
-    xTaskCreate(flash_task, "flash", 8192, (void *)(intptr_t)(strstr(qs,"flash") ? 1 : 0), 5, NULL);
+    /* mode: ram=0, flash=1, cram=2 */
+    int mode = 0;
+    if (strstr(qs, "cram")) mode = 2;
+    else if (strstr(qs, "flash")) mode = 1;
+    xTaskCreate(flash_task, "flash", 8192, (void *)(intptr_t)mode, 5, NULL);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
