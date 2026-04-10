@@ -1,0 +1,12 @@
+dependencies:
+  idf: '>=6.0'
+description: IP101 Ethernet PHY Driver
+repository: git://github.com/espressif/esp-eth-drivers.git
+repository_info:
+  commit_sha: 65a9859ace532d84d5d91e2fd5308ed3076df131
+  path: ip101
+targets:
+- esp32
+- esp32p4
+url: https://github.com/espressif/esp-eth-drivers/tree/master/ip101
+version: 1.0.0

@@ -12,6 +12,7 @@
     --ok: #7ec88b; --ok-dim: rgba(126,200,139,0.1);
     --warn: #e0a458; --warn-dim: rgba(224,164,88,0.1);
     --err: #e06060; --err-dim: rgba(224,96,96,0.1);
+    --purple: #c08cff; --purple-dim: rgba(200,140,255,0.12);
     --radius: 4px;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -23,118 +24,111 @@
   }
   .wrap { max-width: 680px; margin: 0 auto; }
 
-  /* Header */
-  header { display:flex; align-items:baseline; gap:0.6rem; margin-bottom:1.5rem; }
-  header h1 { font-size:1.1rem; font-weight:600; letter-spacing:-0.02em; color:var(--text); }
-  header .badge {
-    font-size:0.6rem; font-weight:500; text-transform:uppercase; letter-spacing:0.06em;
-    padding:0.15rem 0.45rem; border-radius:2px;
-    background:var(--accent-dim); color:var(--accent); border:1px solid rgba(110,168,254,0.2);
-  }
+  header { margin-bottom: 1.5rem; }
+  header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.02em; }
 
-  /* Card */
   .card {
-    background:var(--surface); border:1px solid var(--border);
-    border-radius:var(--radius); padding:1rem 1.1rem; margin-bottom:0.75rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 1rem 1.1rem; margin-bottom: 0.75rem;
   }
   .card-hdr {
-    display:flex; align-items:center; justify-content:space-between;
-    margin-bottom:0.7rem;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 0.7rem;
   }
   .card-hdr h2 {
-    font-size:0.65rem; font-weight:600; text-transform:uppercase;
-    letter-spacing:0.08em; color:var(--text3);
+    font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--text3);
   }
-  .card-hdr .tag {
-    font-size:0.55rem; padding:0.1rem 0.35rem; border-radius:2px;
-    font-weight:500;
+  .tag {
+    font-size: 0.55rem; padding: 0.1rem 0.35rem; border-radius: 2px;
+    font-weight: 500; display: inline-block;
   }
-  .tag-ok { background:var(--ok-dim); color:var(--ok); }
-  .tag-warn { background:var(--warn-dim); color:var(--warn); }
-  .tag-err { background:var(--err-dim); color:var(--err); }
-  .tag-info { background:var(--accent-dim); color:var(--accent); }
+  .tag-ok { background: var(--ok-dim); color: var(--ok); }
+  .tag-warn { background: var(--warn-dim); color: var(--warn); }
+  .tag-err { background: var(--err-dim); color: var(--err); }
+  .tag-info { background: var(--accent-dim); color: var(--accent); }
 
-  /* Grid */
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:0.5rem 1rem; }
-  .grid.g3 { grid-template-columns:1fr 1fr 1fr; }
-  .field label { display:block; font-size:0.6rem; color:var(--text3); text-transform:uppercase; letter-spacing:0.04em; margin-bottom:0.1rem; }
-  .field .val { font-size:0.85rem; font-family:'SF Mono','Cascadia Code',monospace; color:var(--text); }
-  .field .val.mono { color:var(--accent); }
-  .field .val.ok { color:var(--ok); }
-  .field .val.err { color:var(--err); }
-  .field .val.dim { color:var(--text2); }
-
-  /* Buttons */
-  .btn-row { display:flex; gap:0.4rem; margin-top:0.7rem; }
-  button, .btn {
-    display:inline-flex; align-items:center; gap:0.3rem;
-    padding:0.35rem 0.8rem; border:1px solid var(--border); border-radius:var(--radius);
-    background:var(--surface2); color:var(--text2); font-size:0.75rem;
-    cursor:pointer; transition:all 0.15s; font-family:inherit;
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1rem; }
+  .field label {
+    display: block; font-size: 0.6rem; color: var(--text3);
+    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.1rem;
   }
-  button:hover { border-color:var(--text3); color:var(--text); }
-  button:disabled { opacity:0.3; cursor:not-allowed; }
-  button.primary { background:var(--accent-dim); border-color:rgba(110,168,254,0.3); color:var(--accent); }
-  button.primary:hover { background:rgba(110,168,254,0.2); }
+  .field .val {
+    font-size: 0.85rem; font-family: 'SF Mono', 'Cascadia Code', monospace;
+    color: var(--text);
+  }
+  .field .val.mono { color: var(--accent); }
+  .field .val.ok { color: var(--ok); }
+  .field .val.err { color: var(--err); }
 
-  /* Chain */
-  .chain { display:flex; align-items:center; gap:0; overflow-x:auto; padding:0.5rem 0; }
-  .chain-wire { width:28px; height:1px; background:var(--border); flex-shrink:0; }
-  .chain-wire.tdi { background:var(--accent); opacity:0.5; }
-  .chain-wire.tdo { background:var(--ok); opacity:0.5; }
-  .chain-pin { font-size:0.55rem; color:var(--text3); flex-shrink:0; font-weight:600; letter-spacing:0.04em; }
+  .btn-row { display: flex; gap: 0.4rem; margin-top: 0.7rem; flex-wrap: wrap; }
+  button {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface2); color: var(--text2); font-size: 0.75rem;
+    cursor: pointer; transition: all 0.15s; font-family: inherit;
+  }
+  button:hover { border-color: var(--text3); color: var(--text); }
+  button:disabled { opacity: 0.3; cursor: not-allowed; }
+  button.primary { background: var(--accent-dim); border-color: rgba(110,168,254,0.3); color: var(--accent); }
+  button.primary:hover { background: rgba(110,168,254,0.2); }
+
+  select {
+    padding: 0.35rem 0.6rem; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface2); color: var(--text); font-size: 0.75rem;
+    font-family: inherit; cursor: pointer; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23888'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 0.5rem center;
+    padding-right: 1.5rem;
+  }
+  select:hover { border-color: var(--text3); }
+
+  .chain { display: flex; align-items: center; gap: 0; overflow-x: auto; padding: 0.5rem 0; }
+  .chain-wire { width: 28px; height: 1px; background: var(--border); flex-shrink: 0; }
+  .chain-wire.tdi { background: var(--accent); opacity: 0.5; }
+  .chain-wire.tdo { background: var(--ok); opacity: 0.5; }
+  .chain-pin { font-size: 0.55rem; color: var(--text3); flex-shrink: 0; font-weight: 600; letter-spacing: 0.04em; }
   .chain-dev {
-    flex-shrink:0; border:1px solid var(--border); border-radius:var(--radius);
-    padding:0.4rem 0.6rem; text-align:center; min-width:90px;
-    background:var(--surface2); transition:border-color 0.2s;
+    flex-shrink: 0; border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 0.4rem 0.6rem; text-align: center; min-width: 90px;
+    background: var(--surface2); transition: border-color 0.2s;
   }
-  .chain-dev:hover { border-color:var(--text3); }
-  .chain-dev .dev-name { font-size:0.7rem; font-weight:600; color:var(--text); white-space:nowrap; }
-  .chain-dev .dev-id { font-size:0.6rem; font-family:monospace; color:var(--accent); margin-top:0.15rem; }
-  .chain-dev .dev-meta { font-size:0.55rem; color:var(--text3); }
-  .chain-dev.highlight { border-color:var(--accent); background:var(--accent-dim); }
-  .chain-dev.unknown { border-style:dashed; }
+  .chain-dev:hover { border-color: var(--text3); }
+  .chain-dev .dev-name { font-size: 0.7rem; font-weight: 600; color: var(--text); white-space: nowrap; }
+  .chain-dev .dev-id { font-size: 0.6rem; font-family: monospace; color: var(--accent); margin-top: 0.15rem; }
+  .chain-dev .dev-meta { font-size: 0.55rem; color: var(--text3); }
+  .chain-dev.highlight { border-color: var(--accent); background: var(--accent-dim); }
+  .chain-dev.unknown { border-style: dashed; }
 
-  /* File drop */
   .drop {
-    border:1px dashed var(--border); border-radius:var(--radius);
-    padding:1.5rem; text-align:center; cursor:pointer; transition:0.2s;
-    position:relative; background:var(--surface2);
+    border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 1.5rem; text-align: center; cursor: pointer; transition: 0.2s;
+    position: relative; background: var(--surface2);
   }
-  .drop:hover, .drop.over { border-color:var(--accent); background:var(--accent-dim); }
-  .drop input { position:absolute; inset:0; opacity:0; cursor:pointer; }
-  .drop .label { font-size:0.8rem; color:var(--text2); }
-  .drop .hint { font-size:0.65rem; color:var(--text3); margin-top:0.25rem; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-dim); }
+  .drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop .label { font-size: 0.8rem; color: var(--text2); }
+  .drop .hint { font-size: 0.65rem; color: var(--text3); margin-top: 0.25rem; }
 
-  /* Progress */
-  .pbar { height:3px; background:var(--border); border-radius:2px; overflow:hidden; margin-top:0.5rem; }
-  .pbar .fill { height:100%; border-radius:2px; transition:width 0.3s; width:0%; background:var(--accent); }
-  .pbar .fill.done { background:var(--ok); }
-  .pbar .fill.error { background:var(--err); }
+  .pbar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 0.5rem; }
+  .pbar .fill { height: 100%; border-radius: 2px; transition: width 0.3s; width: 0%; background: var(--accent); }
+  .pbar .fill.done { background: var(--ok); }
+  .pbar .fill.error { background: var(--err); }
 
-  .status { font-size:0.7rem; color:var(--text2); margin-top:0.35rem; font-family:monospace; }
+  .status { font-size: 0.7rem; color: var(--text2); margin-top: 0.35rem; font-family: monospace; }
 
-  /* BSR */
-  .bsr-bits { font-family:monospace; font-size:0.65rem; line-height:1.7; word-break:break-all; }
-  .bsr-bits span { cursor:default; }
-  .bsr-hex { font-family:monospace; font-size:0.7rem; color:var(--accent); word-break:break-all; }
+  .bsr-bits { font-family: monospace; font-size: 0.65rem; line-height: 1.7; word-break: break-all; }
+  .bsr-hex { font-family: monospace; font-size: 0.7rem; color: var(--accent); word-break: break-all; }
 
-  /* Table */
-  table.info { width:100%; border-collapse:collapse; font-size:0.7rem; margin-top:0.5rem; }
-  table.info th { text-align:left; color:var(--text3); font-weight:500; padding:0.2rem 0.5rem; border-bottom:1px solid var(--border); }
-  table.info td { padding:0.2rem 0.5rem; border-bottom:1px solid var(--border); font-family:monospace; }
+  .ftag { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 2px; font-size: 0.6rem; font-weight: 600; }
+  .ftag.xe { background: var(--accent-dim); color: var(--accent); }
+  .ftag.elf { background: var(--ok-dim); color: var(--ok); }
+  .ftag.bin { background: var(--warn-dim); color: var(--warn); }
+  .ftag.svf { background: var(--purple-dim); color: var(--purple); }
 
-  /* Divider */
-  hr { border:none; border-top:1px solid var(--border); margin:0.5rem 0; }
+  .sep { height: 1px; background: var(--border); margin: 0.6rem 0; }
 
-  /* Tabs for firmware type */
-  .ftag { display:inline-block; padding:0.1rem 0.4rem; border-radius:2px; font-size:0.6rem; font-weight:600; }
-  .ftag.xe { background:var(--accent-dim); color:var(--accent); }
-  .ftag.elf { background:var(--ok-dim); color:var(--ok); }
-  .ftag.bin { background:var(--warn-dim); color:var(--warn); }
-  .ftag.svf { background:rgba(200,140,255,0.12); color:#c08cff; }
-
-  .hidden { display:none !important; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
@@ -142,7 +136,6 @@
 
   <header>
     <h1>JTAG Programmer</h1>
-    <span class="badge">ESP-IDF</span>
   </header>
 
   <!-- Device -->
@@ -158,7 +151,7 @@
       <div class="field"><label>Revision</label><div class="val" id="revision">--</div></div>
     </div>
     <div class="btn-row">
-      <button class="primary" onclick="identify()">Scan</button>
+      <button class="primary" onclick="identify()">Scan Chain</button>
     </div>
   </div>
 
@@ -206,10 +199,26 @@
   <!-- Program -->
   <div class="card">
     <div class="card-hdr"><h2>Program</h2></div>
-    <div class="btn-row" style="margin-top:0">
-      <button class="primary" id="btn-ram" onclick="flash('ram')" disabled>Load to RAM</button>
-      <button id="btn-flash" onclick="flash('flash')" disabled>Write Flash</button>
-      <button id="btn-svf" onclick="playSvf()" disabled>Play SVF</button>
+    <div style="display:flex; gap:0.6rem; align-items:end; flex-wrap:wrap">
+      <div class="field">
+        <label>Target</label>
+        <select id="sel-target">
+          <option value="xmos">XMOS xCORE</option>
+          <option value="ice40">Lattice iCE40</option>
+          <option value="svf">SVF (generic JTAG)</option>
+        </select>
+      </div>
+      <div class="field" id="method-field">
+        <label>Method</label>
+        <select id="sel-method">
+          <option value="ram">Load to RAM (JTAG)</option>
+          <option value="flash">Write SPI Flash</option>
+          <option value="cram">Load to CRAM (SPI)</option>
+        </select>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="primary" id="btn-go" onclick="program()" disabled>Program</button>
     </div>
     <div class="pbar hidden" id="pbar"><div class="fill" id="pfill"></div></div>
     <div class="status" id="status"></div>
@@ -218,95 +227,208 @@
 </div>
 
 <script>
-const $=id=>document.getElementById(id);
-const fmt=n=>n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?(n/1024).toFixed(1)+' KB':n+' B';
-let uploadedType='';
+const $ = id => document.getElementById(id);
+const fmt = n => n >= 1048576 ? (n/1048576).toFixed(1)+' MB' : n >= 1024 ? (n/1024).toFixed(1)+' KB' : n+' B';
+const show = id => $(id).classList.remove('hidden');
+let uploadedType = '';
 
-async function identify(){
-  try{
-    try{const r=await fetch('/api/chain');const d=await r.json();renderChain(d.devices||[]);}catch(e){}
-    const r=await fetch('/api/identify');const d=await r.json();
-    $('idcode').textContent=d.idcode;
-    $('family').textContent=d.family;
-    $('family').className='val'+(d.ok?' ok':' err');
-    $('tiles').textContent=d.tiles;
-    $('revision').textContent=d.revision;
-    $('dev-status').textContent=d.ok?'Connected':'No device';
-    $('dev-status').className='tag '+(d.ok?'tag-ok':'tag-err');
-    if(d.ok){updateButtons();if(d.bsr_len>0){show('bscan-card');$('bsr-len').textContent=d.bsr_len+' bits';}}
-  }catch(e){$('family').textContent='Error';$('family').className='val err';$('dev-status').textContent='Error';$('dev-status').className='tag tag-err';}
-}
+/* Target/method logic */
+const methods = {
+  xmos:  [{v:'ram',   l:'Load to RAM (JTAG)'}, {v:'flash', l:'Write SPI Flash (JTAG)'}],
+  ice40: [{v:'cram',  l:'Load to CRAM (SPI)'}, {v:'flash', l:'Write SPI Flash'}],
+  svf:   [{v:'svf',   l:'Play SVF file'}],
+};
 
-function renderChain(devs){
-  if(!devs||!devs.length){$('chain-view').innerHTML='<div style="font-size:0.7rem;color:var(--text3)">No devices</div>';show('chain-card');return;}
-  let h='<div class="chain"><div class="chain-pin" style="color:var(--accent)">TDI</div><div class="chain-wire tdi"></div>';
-  devs.forEach((d,i)=>{
-    const cls=d.name.startsWith('XMOS')?'highlight':d.name==='Unknown'?'unknown':'';
-    h+='<div class="chain-dev '+cls+'"><div class="dev-name">'+d.name+'</div><div class="dev-id">'+d.idcode+'</div>';
-    h+='<div class="dev-meta">'+d.manufacturer+' / '+d.part+'</div></div>';
-    if(i<devs.length-1)h+='<div class="chain-wire"></div>';
+$('sel-target').addEventListener('change', updateMethods);
+function updateMethods() {
+  const t = $('sel-target').value;
+  const sel = $('sel-method');
+  sel.innerHTML = '';
+  methods[t].forEach(m => {
+    const o = document.createElement('option');
+    o.value = m.v; o.textContent = m.l;
+    sel.appendChild(o);
   });
-  h+='<div class="chain-wire tdo"></div><div class="chain-pin" style="color:var(--ok)">TDO</div></div>';
-  $('chain-view').innerHTML=h;$('chain-count').textContent=devs.length+' device'+(devs.length>1?'s':'');show('chain-card');
+  $('method-field').classList.toggle('hidden', t === 'svf');
+  updateGoButton();
 }
 
-function show(id){$(id).classList.remove('hidden');}
-function updateButtons(){
-  const ok=$('family').classList.contains('ok')&&!$('fw-info').classList.contains('hidden');
-  $('btn-ram').disabled=!ok||uploadedType==='svf';
-  $('btn-flash').disabled=!ok||uploadedType==='svf';
-  $('btn-svf').disabled=uploadedType!=='svf';
+function updateGoButton() {
+  const hasFile = !$('fw-info').classList.contains('hidden');
+  const t = $('sel-target').value;
+  /* SVF requires SVF file, others require non-SVF */
+  if (t === 'svf') {
+    $('btn-go').disabled = !hasFile || uploadedType !== 'svf';
+  } else {
+    $('btn-go').disabled = !hasFile || uploadedType === 'svf';
+  }
 }
 
-let autoTimer=null;
-async function bscan(){
-  try{const r=await fetch('/api/bscan');const d=await r.json();show('bsr-display');$('bsr-hex').textContent=d.hex;
-    let h='';const b=d.bits;for(let i=0;i<b.length;i++){const c=b[i]==='1'?'var(--ok)':'var(--border)';h+='<span title="bit '+(b.length-1-i)+'" style="color:'+c+'">'+b[i]+'</span>';if((i+1)%8===0&&i<b.length-1)h+=' ';}
-    $('bsr-bits').innerHTML=h;
-  }catch(e){$('bsr-hex').textContent='Error';}
-}
-function bscanAuto(){if(autoTimer){clearInterval(autoTimer);autoTimer=null;$('btn-auto').textContent='Auto';return;}autoTimer=setInterval(bscan,500);$('btn-auto').textContent='Stop';bscan();}
-
-const dz=$('dropzone'),fi=$('fileInput');
-['dragenter','dragover'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.add('over');}));
-['dragleave','drop'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.remove('over');}));
-dz.addEventListener('drop',ev=>{if(ev.dataTransfer.files.length)upload(ev.dataTransfer.files[0]);});
-fi.addEventListener('change',()=>{if(fi.files.length)upload(fi.files[0]);});
-
-async function upload(file){
-  $('status').textContent='Uploading '+file.name+'...';$('fw-name').textContent=file.name;
-  uploadedType=file.name.endsWith('.svf')?'svf':'';
-  try{
-    const r=await fetch('/api/upload',{method:'POST',body:file});const d=await r.json();
-    if(!d.ok)throw new Error('Rejected');
-    const tt={xe:'xe',elf:'elf',bin:'bin',svf:'svf'}[d.type]||'bin';
-    $('fw-type').innerHTML='<span class="ftag '+tt+'">'+d.type.toUpperCase()+'</span>';
-    $('fw-size').textContent=fmt(d.size);$('fw-code').textContent=fmt(d.code_size);
-    $('fw-tiles').textContent=d.tiles;$('fw-segs').textContent=d.segments;
-    $('fw-entry0').textContent=d.entry0==='0x00000000'?'boot ROM':d.entry0;
-    $('fw-entry1').textContent=d.entry1==='0x00000000'?'boot ROM':d.entry1;
-    show('fw-info');$('status').textContent='Ready.';
-    if(uploadedType==='svf'){$('fw-tiles').textContent='--';$('fw-segs').textContent='--';$('fw-entry0').textContent='--';$('fw-entry1').textContent='--';$('fw-code').textContent=fmt(d.size);}
-    updateButtons();
-  }catch(e){$('status').textContent='Upload failed: '+e.message;}
+/* Auto-select target based on uploaded file type */
+function autoSelectTarget(type) {
+  if (type === 'svf') {
+    $('sel-target').value = 'svf';
+  } else if (type === 'xe' || type === 'elf') {
+    $('sel-target').value = 'xmos';
+  }
+  updateMethods();
 }
 
-let pollTimer=null;
-async function flash(mode){
-  disableAll();show('pbar');$('pfill').style.width='0%';$('pfill').className='fill';$('status').textContent='Starting...';
-  try{await fetch('/api/flash?mode='+mode,{method:'POST'});pollTimer=setInterval(poll,500);}catch(e){$('status').textContent='Failed: '+e.message;updateButtons();}
+/* Scan */
+async function identify() {
+  try {
+    try { const r = await fetch('/api/chain'); const d = await r.json(); renderChain(d.devices || []); } catch(e) {}
+    const r = await fetch('/api/identify'); const d = await r.json();
+    $('idcode').textContent = d.idcode;
+    $('family').textContent = d.family;
+    $('family').className = 'val' + (d.ok ? ' ok' : ' err');
+    $('tiles').textContent = d.tiles;
+    $('revision').textContent = d.revision;
+    $('dev-status').textContent = d.ok ? 'Connected' : 'No device';
+    $('dev-status').className = 'tag ' + (d.ok ? 'tag-ok' : 'tag-err');
+    if (d.ok) {
+      updateGoButton();
+      if (d.bsr_len > 0) { show('bscan-card'); $('bsr-len').textContent = d.bsr_len + ' bits'; }
+    }
+  } catch(e) {
+    $('family').textContent = 'Error'; $('family').className = 'val err';
+    $('dev-status').textContent = 'Error'; $('dev-status').className = 'tag tag-err';
+  }
 }
-async function playSvf(){
-  disableAll();show('pbar');$('pfill').style.width='0%';$('pfill').className='fill';$('status').textContent='Playing SVF...';
-  try{await fetch('/api/svf',{method:'POST'});pollTimer=setInterval(poll,500);}catch(e){$('status').textContent='Failed: '+e.message;updateButtons();}
+
+function renderChain(devs) {
+  if (!devs || !devs.length) {
+    $('chain-view').innerHTML = '<div style="font-size:0.7rem;color:var(--text3)">No devices detected</div>';
+    show('chain-card'); return;
+  }
+  let h = '<div class="chain"><div class="chain-pin" style="color:var(--accent)">TDI</div><div class="chain-wire tdi"></div>';
+  devs.forEach((d, i) => {
+    const cls = d.name.includes('XMOS') ? 'highlight' : d.name === 'Unknown' ? 'unknown' : '';
+    h += '<div class="chain-dev ' + cls + '">';
+    h += '<div class="dev-name">' + d.name + '</div>';
+    h += '<div class="dev-id">' + d.idcode + '</div>';
+    h += '<div class="dev-meta">' + d.manufacturer + ' / ' + d.part + '</div></div>';
+    if (i < devs.length - 1) h += '<div class="chain-wire"></div>';
+  });
+  h += '<div class="chain-wire tdo"></div><div class="chain-pin" style="color:var(--ok)">TDO</div></div>';
+  $('chain-view').innerHTML = h;
+  $('chain-count').textContent = devs.length + ' device' + (devs.length > 1 ? 's' : '');
+  show('chain-card');
 }
-function disableAll(){$('btn-ram').disabled=$('btn-flash').disabled=$('btn-svf').disabled=true;}
-async function poll(){
-  try{const r=await fetch('/api/status');const d=await r.json();$('status').textContent=d.status;
-    if(d.progress>=0)$('pfill').style.width=d.progress+'%';
-    if(d.progress>=100||d.result<0){clearInterval(pollTimer);$('pfill').className='fill '+(d.result===0?'done':'error');updateButtons();}
-  }catch(e){}
+
+/* Boundary scan */
+let autoTimer = null;
+async function bscan() {
+  try {
+    const r = await fetch('/api/bscan'); const d = await r.json();
+    show('bsr-display'); $('bsr-hex').textContent = d.hex;
+    let h = ''; const b = d.bits;
+    for (let i = 0; i < b.length; i++) {
+      const c = b[i] === '1' ? 'var(--ok)' : 'var(--border)';
+      h += '<span title="bit ' + (b.length-1-i) + '" style="color:' + c + '">' + b[i] + '</span>';
+      if ((i+1) % 8 === 0 && i < b.length-1) h += ' ';
+    }
+    $('bsr-bits').innerHTML = h;
+  } catch(e) { $('bsr-hex').textContent = 'Error'; }
 }
+function bscanAuto() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; $('btn-auto').textContent = 'Auto'; return; }
+  autoTimer = setInterval(bscan, 500); $('btn-auto').textContent = 'Stop'; bscan();
+}
+
+/* File upload */
+const dz = $('dropzone'), fi = $('fileInput');
+['dragenter','dragover'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('over'); }));
+['dragleave','drop'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.remove('over'); }));
+dz.addEventListener('drop', ev => { if (ev.dataTransfer.files.length) upload(ev.dataTransfer.files[0]); });
+fi.addEventListener('change', () => { if (fi.files.length) upload(fi.files[0]); });
+
+async function upload(file) {
+  $('status').textContent = 'Uploading ' + file.name + '...';
+  $('fw-name').textContent = file.name;
+  uploadedType = file.name.endsWith('.svf') ? 'svf' : '';
+
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: file });
+    const d = await r.json();
+    if (!d.ok) throw new Error('Rejected');
+
+    uploadedType = d.type;
+    const tt = {xe:'xe', elf:'elf', bin:'bin', svf:'svf'}[d.type] || 'bin';
+    $('fw-type').innerHTML = '<span class="ftag ' + tt + '">' + d.type.toUpperCase() + '</span>';
+    $('fw-size').textContent = fmt(d.size);
+    $('fw-code').textContent = fmt(d.code_size);
+    $('fw-tiles').textContent = d.tiles;
+    $('fw-segs').textContent = d.segments;
+    $('fw-entry0').textContent = d.entry0 === '0x00000000' ? 'boot ROM' : d.entry0;
+    $('fw-entry1').textContent = d.entry1 === '0x00000000' ? 'boot ROM' : d.entry1;
+
+    if (uploadedType === 'svf') {
+      $('fw-tiles').textContent = '--';
+      $('fw-segs').textContent = '--';
+      $('fw-entry0').textContent = '--';
+      $('fw-entry1').textContent = '--';
+      $('fw-code').textContent = fmt(d.size);
+    }
+
+    show('fw-info');
+    $('status').textContent = 'Ready.';
+    autoSelectTarget(uploadedType);
+  } catch(e) {
+    $('status').textContent = 'Upload failed: ' + e.message;
+  }
+}
+
+/* Program */
+let pollTimer = null;
+
+async function program() {
+  const target = $('sel-target').value;
+  const method = $('sel-method').value;
+
+  $('btn-go').disabled = true;
+  show('pbar');
+  $('pfill').style.width = '0%';
+  $('pfill').className = 'fill';
+
+  let endpoint, label;
+  if (target === 'svf') {
+    endpoint = '/api/svf';
+    label = 'Playing SVF...';
+  } else if (target === 'ice40') {
+    endpoint = '/api/flash?mode=' + method;
+    label = method === 'cram' ? 'Loading iCE40 CRAM...' : 'Writing iCE40 flash...';
+  } else {
+    endpoint = '/api/flash?mode=' + method;
+    label = method === 'ram' ? 'Loading to RAM...' : 'Writing SPI flash...';
+  }
+
+  $('status').textContent = label;
+
+  try {
+    await fetch(endpoint, { method: 'POST' });
+    pollTimer = setInterval(poll, 500);
+  } catch(e) {
+    $('status').textContent = 'Failed: ' + e.message;
+    updateGoButton();
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/api/status'); const d = await r.json();
+    $('status').textContent = d.status;
+    if (d.progress >= 0) $('pfill').style.width = d.progress + '%';
+    if (d.progress >= 100 || d.result < 0) {
+      clearInterval(pollTimer);
+      $('pfill').className = 'fill ' + (d.result === 0 ? 'done' : 'error');
+      updateGoButton();
+    }
+  } catch(e) {}
+}
+
+/* Init */
+updateMethods();
 </script>
 </body>
 </html>
