@@ -159,7 +159,7 @@ idf.py set-target esp32p4 && idf.py build flash monitor
 | **JTAG Chain** | Visual diagram: `TDI -> [XU316] -> [ECP5] -> TDO` |
 | **Boundary Scan** | Live pin-state capture with hex + bit view, auto-refresh |
 | **Firmware** | Drag-and-drop `.xe` / `.bin` / `.svf`, shows file details |
-| **Program** | Load to RAM or write SPI flash with progress bar |
+| **Program** | Select target (XMOS / iCE40 / SVF) and method (RAM / Flash / CRAM), one-click go |
 
 ---
 
@@ -179,7 +179,11 @@ GND           ──>  GND
 
 ### Waveshare ESP32-P4-NANO
 
-<img src="docs/jtag_pinout.svg" alt="ESP32-P4-NANO JTAG Pinout" />
+<img src="docs/jtag_pinout.svg" alt="ESP32-P4-NANO Pinout" />
+
+JTAG and SPI use separate headers so both can be wired simultaneously.
+
+**JTAG -- Right Header** (rows 7-10)
 
 | Signal | GPIO | Position |
 |---|---|---|
@@ -190,7 +194,18 @@ GND           ──>  GND
 | TRST | 53 | Row 7 outer |
 | SRST | 54 | Row 7 inner |
 
-Ethernet (IP101GRI over RMII) handles networking. The **LDO_VO4** pin (Row 1, outer) provides **1.8 V** for the level-shifter low side.
+**SPI / iCE40 -- Left Header** (rows 4, 6-8)
+
+| Signal | GPIO | Position |
+|---|---|---|
+| SPI_CLK | 23 | Row 4 outer |
+| SPI_MOSI | 5 | Row 6 outer |
+| SPI_MISO | 4 | Row 6 inner |
+| SPI_CS | 20 | Row 7 outer |
+| ICE40_CRESET | 21 | Row 8 outer |
+| ICE40_CDONE | 22 | Row 8 inner |
+
+Ethernet (IP101GRI over RMII) handles networking on internal GPIOs. The **LDO_VO4** pin (Right Row 1, outer) provides **1.8 V** for a JTAG level shifter if the target uses 1.8 V I/O.
 
 ---
 
@@ -199,14 +214,18 @@ Ethernet (IP101GRI over RMII) handles networking. The **LDO_VO4** pin (Row 1, ou
 ```
 components/xmos_jtag/
  include/
-   xmos_jtag.h            Public API (chain scan, identify, bscan, load, flash)
+   xmos_jtag.h            XMOS API (chain scan, identify, bscan, load, flash)
    xmos_xe.h              XE / ELF parser
+   jtag_svf.h             SVF player API
+   jtag_ice40.h           iCE40 SPI programmer API
  src/
    jtag_transport.h        Backend vtable (shift_ir, shift_dr, reset, idle)
    jtag_gpio.c             GPIO bit-bang   -- any ESP32
    jtag_parlio.c           PARLIO + DMA    -- ESP32-P4
+   svf_player.c            SVF file parser and executor
+   ice40.c                 iCE40 CRAM + SPI flash programmer
    xmos_regs.h             XMOS TAP, MUX, PSWITCH, debug register map
-   xmos_jtag.c             Protocol layer + known-device database
+   xmos_jtag.c             XMOS protocol layer + known-device database
    xmos_xe.c               XE container + ELF32 segment parser
 ```
 
