@@ -7,8 +7,9 @@
  *   - Uploading and inspecting .xe / .bin firmware files
  *   - Flashing firmware to XMOS RAM or SPI flash via JTAG
  *
- * On WiFi-capable chips (S3, C3, ...): creates AP, open http://192.168.4.1
- * On ESP32-P4: use Ethernet or USB networking (WiFi code is compiled out)
+ * Networking:
+ *   ESP32-S3/C3/...: WiFi AP, open http://192.168.4.1
+ *   ESP32-P4-NANO:   Ethernet (IP101GRI via RMII), DHCP
  */
 
 #include <string.h>
@@ -27,6 +28,14 @@
 #include "esp_wifi.h"
 #endif
 
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "esp_eth.h"
+#include "esp_eth_mac.h"
+#include "esp_eth_phy.h"
+#include "esp_eth_phy_ip101.h"
+#include "driver/gpio.h"
+#endif
+
 static const char *TAG = "xmos_web";
 
 /* -------------------------------------------------------------------------
@@ -40,19 +49,20 @@ static const char *TAG = "xmos_web";
 /*
  * JTAG pins -- adjust for your board.
  *
- * ESP32-S3 defaults (avoids strapping/PSRAM/USB pins):
- *   TCK=12, TMS=13, TDI=14, TDO=11
+ * ESP32-P4-NANO: right header rows 7-10
+ *   Ethernet uses GPIO28-35,49-52 so JTAG goes on the remaining GPIOs.
+ *   Available: 2,3,4,5,6,20,21,22,23,45,46,47,48,53,54
+ *   Using: 4,5,6,2 (left+right header, physically accessible)
  *
- * Waveshare ESP32-P4-NANO right header rows 7-10:
- *   TCK=47, TMS=48, TDI=46, TDO=45, TRST=53, SRST=54
+ * ESP32-S3: safe GPIO pins avoiding strapping/PSRAM/USB
  */
 #if CONFIG_IDF_TARGET_ESP32P4
-#define PIN_TCK             GPIO_NUM_47
-#define PIN_TMS             GPIO_NUM_48
-#define PIN_TDI             GPIO_NUM_46
-#define PIN_TDO             GPIO_NUM_45
+#define PIN_TCK             GPIO_NUM_4
+#define PIN_TMS             GPIO_NUM_5
+#define PIN_TDI             GPIO_NUM_6
+#define PIN_TDO             GPIO_NUM_2
 #define PIN_TRST            GPIO_NUM_NC
-#define PIN_SRST            GPIO_NUM_54
+#define PIN_SRST            GPIO_NUM_3
 #else
 #define PIN_TCK             GPIO_NUM_12
 #define PIN_TMS             GPIO_NUM_13
@@ -62,38 +72,40 @@ static const char *TAG = "xmos_web";
 #define PIN_SRST            GPIO_NUM_NC
 #endif
 
+/* ESP32-P4-NANO Ethernet (IP101GRI via RMII) */
+#if CONFIG_IDF_TARGET_ESP32P4
+#define ETH_PHY_ADDR        1
+#define ETH_PHY_RST_GPIO    GPIO_NUM_51
+#define ETH_MDC_GPIO        GPIO_NUM_31
+#define ETH_MDIO_GPIO       GPIO_NUM_52
+#endif
+
 /* -------------------------------------------------------------------------
  * Globals
  * ---------------------------------------------------------------------- */
 static xmos_jtag_handle_t s_jtag = NULL;
 static xmos_chip_info_t s_chip_info = {0};
 static bool s_identified = false;
-
-/* Boundary scan state */
 static size_t s_bsr_len = 0;
 
-/* Upload buffer */
 #define MAX_FIRMWARE_SIZE   (8 * 1024 * 1024)
 static uint8_t *s_fw_buf = NULL;
 static size_t s_fw_len = 0;
 static bool s_fw_ready = false;
 
-/* Flash progress */
 static volatile int s_flash_progress = -1;
 static volatile int s_flash_result = 0;
 static char s_flash_status[128] = "Idle";
 
-/* -------------------------------------------------------------------------
- * Embedded HTML
- * ---------------------------------------------------------------------- */
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
 
 /* -------------------------------------------------------------------------
- * WiFi AP setup (only on WiFi-capable chips)
+ * Network init
  * ---------------------------------------------------------------------- */
+
 #if SOC_WIFI_SUPPORTED
-static void wifi_init_ap(void)
+static void net_init_wifi_ap(void)
 {
     esp_netif_create_default_wifi_ap();
 
@@ -117,7 +129,51 @@ static void wifi_init_ap(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi AP started: SSID=%s", WIFI_AP_SSID);
+    ESP_LOGI(TAG, "WiFi AP started: SSID=%s, open http://192.168.4.1", WIFI_AP_SSID);
+}
+#endif
+
+#if CONFIG_IDF_TARGET_ESP32P4
+static void net_init_ethernet(void)
+{
+    /* Reset PHY */
+    gpio_config_t rst_cfg = {
+        .pin_bit_mask = 1ULL << ETH_PHY_RST_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&rst_cfg);
+    gpio_set_level(ETH_PHY_RST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(ETH_PHY_RST_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    /* Create default netif for Ethernet */
+    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
+
+    /* MAC config (internal EMAC with RMII) */
+    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+    eth_esp32_emac_config_t emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
+    emac_config.smi_gpio.mdc_num = ETH_MDC_GPIO;
+    emac_config.smi_gpio.mdio_num = ETH_MDIO_GPIO;
+    esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&emac_config, &mac_config);
+
+    /* PHY config (IP101GRI) */
+    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
+    phy_config.phy_addr = ETH_PHY_ADDR;
+    phy_config.reset_gpio_num = -1;  /* Already reset above */
+    esp_eth_phy_t *phy = esp_eth_phy_new_ip101(&phy_config);
+
+    /* Install Ethernet driver */
+    esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
+    esp_eth_handle_t eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&eth_config, &eth_handle));
+
+    /* Attach to netif */
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
+
+    ESP_ERROR_CHECK(esp_eth_start(eth_handle));
+    ESP_LOGI(TAG, "Ethernet started (IP101GRI RMII). Waiting for DHCP...");
 }
 #endif
 
@@ -133,7 +189,6 @@ static esp_err_t handler_index(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/identify */
 static esp_err_t handler_identify(httpd_req_t *req)
 {
     esp_err_t err = xmos_jtag_identify(s_jtag, &s_chip_info);
@@ -147,10 +202,8 @@ static esp_err_t handler_identify(httpd_req_t *req)
         default: break;
     }
 
-    /* Auto-detect BSR length if identification succeeded */
-    if (s_identified) {
+    if (s_identified)
         xmos_jtag_bscan_detect(s_jtag, &s_bsr_len);
-    }
 
     char json[320];
     snprintf(json, sizeof(json),
@@ -166,7 +219,44 @@ static esp_err_t handler_identify(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/bscan -- capture boundary scan register */
+/* GET /api/chain -- scan JTAG chain, return all devices */
+static esp_err_t handler_chain(httpd_req_t *req)
+{
+    jtag_chain_t chain;
+    esp_err_t err = xmos_jtag_scan_chain(s_jtag, &chain);
+    if (err != ESP_OK) {
+        char errmsg[128];
+        snprintf(errmsg, sizeof(errmsg),
+                 "{\"devices\":[],\"error\":\"%s\"}", esp_err_to_name(err));
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, errmsg);
+        return ESP_OK;
+    }
+
+    /* Build JSON array */
+    char *json = malloc(2048);
+    if (!json) return ESP_FAIL;
+    int pos = snprintf(json, 2048, "{\"devices\":[");
+
+    for (size_t i = 0; i < chain.num_devices; i++) {
+        const jtag_chain_device_t *d = &chain.devices[i];
+        if (i > 0) json[pos++] = ',';
+        pos += snprintf(json + pos, 2048 - pos,
+            "{\"idcode\":\"0x%08lx\",\"name\":\"%s\","
+            "\"manufacturer\":\"0x%03x\",\"part\":\"0x%04x\","
+            "\"version\":%d,\"ir_len\":%d}",
+            (unsigned long)d->idcode, d->name,
+            d->manufacturer, d->part_number,
+            d->version, d->ir_len);
+    }
+    pos += snprintf(json + pos, 2048 - pos, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, pos);
+    free(json);
+    return ESP_OK;
+}
+
 static esp_err_t handler_bscan(httpd_req_t *req)
 {
     if (!s_identified || s_bsr_len == 0) {
@@ -189,41 +279,26 @@ static esp_err_t handler_bscan(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Build JSON: { "bsr_len": N, "hex": "AABB...", "bits": "01100..." } */
-    /* Hex string: 2 chars per byte */
     size_t hex_len = bytes * 2;
-    /* Bit string: 1 char per bit */
     size_t json_size = 64 + hex_len + s_bsr_len + 4;
     char *json = malloc(json_size);
-    if (!json) {
-        free(bsr);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
+    if (!json) { free(bsr); return ESP_FAIL; }
 
     int pos = snprintf(json, json_size, "{\"bsr_len\":%zu,\"hex\":\"", s_bsr_len);
-
-    /* Hex representation (MSB byte first for readability) */
     for (int i = (int)bytes - 1; i >= 0; i--)
         pos += snprintf(json + pos, json_size - pos, "%02X", bsr[i]);
-
     pos += snprintf(json + pos, json_size - pos, "\",\"bits\":\"");
-
-    /* Bit string (MSB first) */
     for (int i = (int)s_bsr_len - 1; i >= 0; i--)
         json[pos++] = ((bsr[i / 8] >> (i % 8)) & 1) ? '1' : '0';
-
     pos += snprintf(json + pos, json_size - pos, "\"}");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, pos);
-
     free(json);
     free(bsr);
     return ESP_OK;
 }
 
-/* POST /api/upload */
 static esp_err_t handler_upload(httpd_req_t *req)
 {
     if (req->content_len > MAX_FIRMWARE_SIZE) {
@@ -233,8 +308,7 @@ static esp_err_t handler_upload(httpd_req_t *req)
 
     if (!s_fw_buf) {
         s_fw_buf = heap_caps_malloc(MAX_FIRMWARE_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_fw_buf)
-            s_fw_buf = malloc(MAX_FIRMWARE_SIZE);
+        if (!s_fw_buf) s_fw_buf = malloc(MAX_FIRMWARE_SIZE);
         if (!s_fw_buf) {
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
             return ESP_FAIL;
@@ -243,49 +317,35 @@ static esp_err_t handler_upload(httpd_req_t *req)
 
     s_fw_len = 0;
     s_fw_ready = false;
-
     int remaining = req->content_len;
     while (remaining > 0) {
-        int recv_len = httpd_req_recv(req, (char *)s_fw_buf + s_fw_len,
-                                      remaining < 4096 ? remaining : 4096);
-        if (recv_len <= 0) {
-            if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Recv error");
-            return ESP_FAIL;
-        }
-        s_fw_len += recv_len;
-        remaining -= recv_len;
+        int n = httpd_req_recv(req, (char *)s_fw_buf + s_fw_len,
+                               remaining < 4096 ? remaining : 4096);
+        if (n <= 0) { if (n == HTTPD_SOCK_ERR_TIMEOUT) continue; return ESP_FAIL; }
+        s_fw_len += n;
+        remaining -= n;
     }
-
     s_fw_ready = true;
-    ESP_LOGI(TAG, "Firmware uploaded: %zu bytes", s_fw_len);
 
-    /* Analyse file type */
     const char *ftype = "bin";
     int tiles = 0, segments = 0;
     uint32_t entry0 = 0, entry1 = 0;
     size_t code_size = 0;
 
     xe_parsed_t parsed;
-    if (s_fw_len >= 4 && s_fw_buf[0] == 'X' && s_fw_buf[1] == 'M' &&
-        s_fw_buf[2] == 'O' && s_fw_buf[3] == 'S') {
+    if (s_fw_len >= 4 && s_fw_buf[0] == 'X' && s_fw_buf[1] == 'M') {
         ftype = "xe";
         if (xe_parse(s_fw_buf, s_fw_len, &parsed) == ESP_OK) {
-            tiles = parsed.num_tiles;
-            segments = (int)parsed.num_segments;
-            entry0 = parsed.entry_points[0];
-            entry1 = parsed.entry_points[1];
-            for (size_t i = 0; i < parsed.num_segments; i++)
-                code_size += parsed.segments[i].filesz;
+            tiles = parsed.num_tiles; segments = (int)parsed.num_segments;
+            entry0 = parsed.entry_points[0]; entry1 = parsed.entry_points[1];
+            for (size_t i = 0; i < parsed.num_segments; i++) code_size += parsed.segments[i].filesz;
         }
     } else if (s_fw_len >= 4 && s_fw_buf[0] == 0x7F && s_fw_buf[1] == 'E') {
         ftype = "elf";
         if (xe_parse(s_fw_buf, s_fw_len, &parsed) == ESP_OK) {
-            tiles = parsed.num_tiles;
-            segments = (int)parsed.num_segments;
+            tiles = parsed.num_tiles; segments = (int)parsed.num_segments;
             entry0 = parsed.entry_points[0];
-            for (size_t i = 0; i < parsed.num_segments; i++)
-                code_size += parsed.segments[i].filesz;
+            for (size_t i = 0; i < parsed.num_segments; i++) code_size += parsed.segments[i].filesz;
         }
     } else {
         code_size = s_fw_len;
@@ -293,91 +353,64 @@ static esp_err_t handler_upload(httpd_req_t *req)
 
     char json[384];
     snprintf(json, sizeof(json),
-        "{\"ok\":true,\"size\":%zu,\"type\":\"%s\","
-        "\"tiles\":%d,\"segments\":%d,"
-        "\"entry0\":\"0x%08lx\",\"entry1\":\"0x%08lx\","
-        "\"code_size\":%zu}",
+        "{\"ok\":true,\"size\":%zu,\"type\":\"%s\",\"tiles\":%d,\"segments\":%d,"
+        "\"entry0\":\"0x%08lx\",\"entry1\":\"0x%08lx\",\"code_size\":%zu}",
         s_fw_len, ftype, tiles, segments,
         (unsigned long)entry0, (unsigned long)entry1, code_size);
-
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json);
     return ESP_OK;
 }
 
-/* Flash task */
 static void flash_task(void *arg)
 {
     int mode = (int)(intptr_t)arg;
-    s_flash_progress = 0;
-    s_flash_result = 0;
+    s_flash_progress = 0; s_flash_result = 0;
     snprintf(s_flash_status, sizeof(s_flash_status), "Starting...");
-
     esp_err_t err;
 
     if (mode == 0) {
         snprintf(s_flash_status, sizeof(s_flash_status), "Loading to RAM via JTAG...");
         s_flash_progress = 10;
-
         if (s_fw_len >= 4 && (s_fw_buf[0] == 'X' || s_fw_buf[0] == 0x7F))
             err = xmos_jtag_load_xe(s_jtag, s_fw_buf, s_fw_len, true);
         else
-            err = xmos_jtag_load_raw(s_jtag, 0, s_fw_buf, s_fw_len,
-                                     0x00040000, 0x00080000);
-
+            err = xmos_jtag_load_raw(s_jtag, 0, s_fw_buf, s_fw_len, 0x00040000, 0x00080000);
         if (err == ESP_OK) {
             s_flash_progress = 100;
             snprintf(s_flash_status, sizeof(s_flash_status), "Loaded to RAM OK");
         } else {
             s_flash_result = -1;
-            snprintf(s_flash_status, sizeof(s_flash_status),
-                     "Failed: %s", esp_err_to_name(err));
+            snprintf(s_flash_status, sizeof(s_flash_status), "Failed: %s", esp_err_to_name(err));
         }
     } else {
-        snprintf(s_flash_status, sizeof(s_flash_status),
-                 "SPI flash: provide a stub or use direct SPI mode");
         s_flash_result = -1;
+        snprintf(s_flash_status, sizeof(s_flash_status), "SPI flash: provide stub or use direct SPI");
     }
-
     s_flash_progress = s_flash_result == 0 ? 100 : -1;
     vTaskDelete(NULL);
 }
 
-/* POST /api/flash?mode=ram|flash */
 static esp_err_t handler_flash(httpd_req_t *req)
 {
-    if (!s_fw_ready || s_fw_len == 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No firmware uploaded");
-        return ESP_FAIL;
-    }
-    if (!s_identified) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Device not identified");
-        return ESP_FAIL;
-    }
+    if (!s_fw_ready) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No firmware"); return ESP_FAIL; }
+    if (!s_identified) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Not identified"); return ESP_FAIL; }
     if (s_flash_progress >= 0 && s_flash_progress < 100) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Flash in progress");
-        return ESP_FAIL;
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "In progress"); return ESP_FAIL;
     }
-
-    char mode_str[16] = "ram";
-    httpd_req_get_url_query_str(req, mode_str, sizeof(mode_str));
-    int mode = strstr(mode_str, "flash") ? 1 : 0;
-
-    xTaskCreate(flash_task, "flash", 8192, (void *)(intptr_t)mode, 5, NULL);
-
+    char qs[16] = "ram";
+    httpd_req_get_url_query_str(req, qs, sizeof(qs));
+    xTaskCreate(flash_task, "flash", 8192, (void *)(intptr_t)(strstr(qs,"flash") ? 1 : 0), 5, NULL);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true,\"msg\":\"Flash started\"}");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
 }
 
-/* GET /api/status */
 static esp_err_t handler_status(httpd_req_t *req)
 {
     char json[256];
-    snprintf(json, sizeof(json),
-        "{\"progress\":%d,\"result\":%d,\"status\":\"%s\"}",
-        s_flash_progress, s_flash_result, s_flash_status);
-
+    snprintf(json, sizeof(json), "{\"progress\":%d,\"result\":%d,\"status\":\"%s\"}",
+             s_flash_progress, s_flash_result, s_flash_status);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json);
     return ESP_OK;
@@ -386,21 +419,17 @@ static esp_err_t handler_status(httpd_req_t *req)
 /* -------------------------------------------------------------------------
  * HTTP server
  * ---------------------------------------------------------------------- */
-static httpd_handle_t start_webserver(void)
+static void start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 10;
-    config.uri_match_fn = httpd_uri_match_wildcard;
-
     httpd_handle_t server = NULL;
-    if (httpd_start(&server, &config) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start HTTP server");
-        return NULL;
-    }
+    ESP_ERROR_CHECK(httpd_start(&server, &config));
 
     const httpd_uri_t uris[] = {
         { .uri = "/",              .method = HTTP_GET,  .handler = handler_index },
         { .uri = "/api/identify",  .method = HTTP_GET,  .handler = handler_identify },
+        { .uri = "/api/chain",     .method = HTTP_GET,  .handler = handler_chain },
         { .uri = "/api/bscan",     .method = HTTP_GET,  .handler = handler_bscan },
         { .uri = "/api/upload",    .method = HTTP_POST, .handler = handler_upload },
         { .uri = "/api/flash",     .method = HTTP_POST, .handler = handler_flash },
@@ -410,7 +439,6 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &uris[i]);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
-    return server;
 }
 
 /* -------------------------------------------------------------------------
@@ -422,23 +450,19 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    /* Init JTAG */
     xmos_jtag_pins_t pins = {
-        .tck    = PIN_TCK,
-        .tms    = PIN_TMS,
-        .tdi    = PIN_TDI,
-        .tdo    = PIN_TDO,
-        .trst_n = PIN_TRST,
-        .srst_n = PIN_SRST,
+        .tck = PIN_TCK, .tms = PIN_TMS, .tdi = PIN_TDI, .tdo = PIN_TDO,
+        .trst_n = PIN_TRST, .srst_n = PIN_SRST,
     };
     ESP_ERROR_CHECK(xmos_jtag_init(&pins, &s_jtag));
 
-#if SOC_WIFI_SUPPORTED
-    wifi_init_ap();
-    ESP_LOGI(TAG, "Connect to WiFi '%s' and open http://192.168.4.1", WIFI_AP_SSID);
+#if CONFIG_IDF_TARGET_ESP32P4
+    net_init_ethernet();
+    ESP_LOGI(TAG, "Ethernet started. Check DHCP lease for IP address.");
+#elif SOC_WIFI_SUPPORTED
+    net_init_wifi_ap();
 #else
-    ESP_LOGW(TAG, "No WiFi on this chip. Use Ethernet or USB networking.");
-    ESP_LOGI(TAG, "HTTP server will start once a network interface is up.");
+    ESP_LOGW(TAG, "No network interface available on this chip.");
 #endif
 
     start_webserver();

@@ -22,7 +22,10 @@
 #include "jtag_transport.h"
 #include "driver/parlio_tx.h"
 #include "driver/parlio_rx.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
+#include "driver/gpio.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -204,14 +207,15 @@ static esp_err_t parlio_do_shift(jtag_parlio_ctx_t *ctx, bool is_ir,
     size_t actual_cycles = build_shift_sequence(is_ir, tdi, bits, ctx->tx_buf);
     (void)actual_cycles;
 
-    /* Set up RX if TDO capture needed */
+    /* Set up RX if TDO capture needed.
+     * Buffer size must be >= eof_data_len (set to ctx->buf_size). */
     if (tdo) {
-        memset(ctx->rx_buf, 0, rx_bytes);
+        memset(ctx->rx_buf, 0, ctx->buf_size);
         parlio_receive_config_t rx_cfg = {
             .delimiter = ctx->rx_delim,
         };
         esp_err_t err = parlio_rx_unit_receive(ctx->rx, ctx->rx_buf,
-                                               rx_bytes, &rx_cfg);
+                                               ctx->buf_size, &rx_cfg);
         if (err != ESP_OK) return err;
 
         /* Start the soft delimiter so RX begins capturing */
@@ -287,14 +291,13 @@ static void parlio_free_transport(jtag_transport_t *self)
 {
     jtag_parlio_ctx_t *ctx = (jtag_parlio_ctx_t *)self;
     if (ctx->rx) {
-        parlio_rx_unit_disable(ctx->rx);
+        parlio_rx_unit_disable(ctx->rx);  /* OK if already disabled */
         parlio_del_rx_unit(ctx->rx);
     }
-    if (ctx->rx_delim) {
+    if (ctx->rx_delim)
         parlio_del_rx_delimiter(ctx->rx_delim);
-    }
     if (ctx->tx) {
-        parlio_tx_unit_disable(ctx->tx);
+        parlio_tx_unit_disable(ctx->tx);  /* OK if already disabled */
         parlio_del_tx_unit(ctx->tx);
     }
     if (ctx->tx_buf) heap_caps_free(ctx->tx_buf);
@@ -383,8 +386,8 @@ esp_err_t jtag_transport_parlio_create(const xmos_jtag_pins_t *pins,
     parlio_rx_soft_delimiter_config_t delim_cfg = {
         .sample_edge = PARLIO_SAMPLE_EDGE_NEG,
         .bit_pack_order = PARLIO_BIT_PACK_ORDER_LSB,
-        .eof_data_len = 0,
-        .timeout_ticks = tck_freq_hz / 100,  /* 10ms timeout */
+        .eof_data_len = ctx->buf_size,       /* Max capture per transaction */
+        .timeout_ticks = tck_freq_hz / 100,  /* 10ms timeout as safety net */
     };
     err = parlio_new_rx_soft_delimiter(&delim_cfg, &ctx->rx_delim);
     if (err != ESP_OK) goto fail;

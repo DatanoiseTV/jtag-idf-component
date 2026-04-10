@@ -73,7 +73,38 @@ esp_err_t xmos_jtag_init(const xmos_jtag_pins_t *pins,
 void xmos_jtag_deinit(xmos_jtag_handle_t handle);
 
 /* -------------------------------------------------------------------------
- * Device identification
+ * JTAG chain scan
+ * ---------------------------------------------------------------------- */
+
+#define JTAG_CHAIN_MAX_DEVICES  16
+
+/** Information about one device in the JTAG chain. */
+typedef struct {
+    uint32_t idcode;            /**< Raw 32-bit IDCODE */
+    uint16_t manufacturer;      /**< Manufacturer ID (bits [11:1]) */
+    uint16_t part_number;       /**< Part number (bits [27:12]) */
+    uint8_t  version;           /**< Version (bits [31:28]) */
+    uint8_t  ir_len;            /**< Detected IR length (0 if unknown) */
+    const char *name;           /**< Human-readable name, or "Unknown" */
+} jtag_chain_device_t;
+
+/** Result of a chain scan. */
+typedef struct {
+    jtag_chain_device_t devices[JTAG_CHAIN_MAX_DEVICES];
+    size_t              num_devices;
+} jtag_chain_t;
+
+/**
+ * Scan the JTAG chain and enumerate all devices.
+ *
+ * Resets the TAP, then reads IDCODEs from the chain until BYPASS (all-1s)
+ * is seen or max devices reached.  Identifies known manufacturers/parts.
+ */
+esp_err_t xmos_jtag_scan_chain(xmos_jtag_handle_t handle,
+                               jtag_chain_t *chain);
+
+/* -------------------------------------------------------------------------
+ * Device identification (XMOS-specific)
  * ---------------------------------------------------------------------- */
 
 /**

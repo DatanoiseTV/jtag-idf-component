@@ -6,9 +6,10 @@ set(requires
     nvs_flash
 )
 
-# ESP32-P4 has no native WiFi; all other targets do
 if(NOT IDF_TARGET STREQUAL "esp32p4")
     list(APPEND requires esp_wifi)
+else()
+    list(APPEND requires esp_eth)
 endif()
 
 idf_component_register(

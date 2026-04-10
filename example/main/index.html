@@ -105,6 +105,45 @@
   .tag.xe { background: rgba(88,166,255,0.15); color: var(--accent); }
   .tag.elf { background: rgba(63,185,80,0.15); color: var(--green); }
   .tag.bin { background: rgba(210,153,34,0.15); color: var(--yellow); }
+
+  /* JTAG chain visualization */
+  .chain {
+    display: flex; align-items: center; gap: 0; overflow-x: auto;
+    padding: 0.75rem 0; margin-top: 0.5rem;
+  }
+  .chain-wire {
+    width: 32px; height: 2px; background: var(--text2); flex-shrink: 0;
+  }
+  .chain-wire.tdi { background: var(--accent); }
+  .chain-wire.tdo { background: var(--green); }
+  .chain-pin {
+    font-size: 0.6rem; color: var(--text2); flex-shrink: 0;
+    text-align: center; line-height: 1;
+  }
+  .chain-pin .label { font-weight: 600; }
+  .chain-dev {
+    flex-shrink: 0; border: 1.5px solid var(--border); border-radius: 6px;
+    padding: 0.5rem 0.7rem; text-align: center; min-width: 100px;
+    background: var(--surface); position: relative; cursor: default;
+    transition: border-color 0.2s;
+  }
+  .chain-dev:hover { border-color: var(--accent); }
+  .chain-dev .dev-name {
+    font-size: 0.75rem; font-weight: 600; color: var(--text);
+    white-space: nowrap;
+  }
+  .chain-dev .dev-id {
+    font-size: 0.65rem; font-family: monospace; color: var(--accent);
+    margin-top: 0.2rem;
+  }
+  .chain-dev .dev-mfg {
+    font-size: 0.6rem; color: var(--text2); margin-top: 0.15rem;
+  }
+  .chain-dev .dev-ir {
+    font-size: 0.55rem; color: var(--text2);
+  }
+  .chain-dev.xmos { border-color: var(--accent); background: rgba(88,166,255,0.05); }
+  .chain-dev.unknown { border-style: dashed; }
 </style>
 </head>
 <body>
@@ -135,6 +174,12 @@
     <div class="btn-row">
       <button onclick="identify()">Identify Device</button>
     </div>
+  </div>
+
+  <!-- JTAG Chain -->
+  <div class="card" id="chain-card" style="display:none">
+    <div class="card-title">JTAG Chain</div>
+    <div id="chain-view"></div>
   </div>
 
   <!-- Boundary Scan -->
@@ -242,6 +287,16 @@ function fmt(n) {
 
 async function identify() {
   try {
+    /* Scan chain first (non-fatal if it fails) */
+    try {
+      const cr = await fetch('/api/chain');
+      const cd = await cr.json();
+      renderChain(cd.devices || []);
+    } catch(ce) {
+      console.warn('Chain scan failed:', ce);
+    }
+
+    /* Then identify XMOS device */
     const r = await fetch('/api/identify');
     const d = await r.json();
     $('idcode').textContent = d.idcode;
@@ -260,6 +315,51 @@ async function identify() {
     $('family').textContent = 'Error: ' + e.message;
     $('family').className = 'val err';
   }
+}
+
+function renderChain(devices) {
+  const el = $('chain-view');
+  if (!devices || devices.length === 0) {
+    el.innerHTML = '<div style="color:var(--text2);font-size:0.8rem">No devices found in chain</div>';
+    $('chain-card').style.display = 'block';
+    return;
+  }
+
+  let html = '<div class="chain">';
+
+  /* TDI pin */
+  html += '<div class="chain-pin"><div class="label" style="color:var(--accent)">TDI</div></div>';
+  html += '<div class="chain-wire tdi"></div>';
+
+  devices.forEach((d, i) => {
+    const isXmos = d.name.startsWith('XMOS');
+    const isUnknown = d.name === 'Unknown';
+    const cls = isXmos ? 'xmos' : isUnknown ? 'unknown' : '';
+
+    html += '<div class="chain-dev ' + cls + '">';
+    html += '<div class="dev-name">' + d.name + '</div>';
+    html += '<div class="dev-id">' + d.idcode + '</div>';
+    html += '<div class="dev-mfg">MFG: ' + d.manufacturer + ' Part: ' + d.part + '</div>';
+    if (d.ir_len > 0) html += '<div class="dev-ir">IR: ' + d.ir_len + '-bit</div>';
+    html += '</div>';
+
+    /* Wire between devices */
+    if (i < devices.length - 1) {
+      html += '<div class="chain-wire"></div>';
+    }
+  });
+
+  html += '<div class="chain-wire tdo"></div>';
+  html += '<div class="chain-pin"><div class="label" style="color:var(--green)">TDO</div></div>';
+  html += '</div>';
+
+  /* Summary */
+  html += '<div style="font-size:0.7rem;color:var(--text2);margin-top:0.25rem">';
+  html += devices.length + ' device' + (devices.length > 1 ? 's' : '') + ' in chain';
+  html += '</div>';
+
+  el.innerHTML = html;
+  $('chain-card').style.display = 'block';
 }
 
 /* Boundary scan */
@@ -336,8 +436,8 @@ async function upload(file) {
     $('fw-code').textContent = fmt(d.code_size);
     $('fw-tiles').textContent = d.tiles;
     $('fw-segs').textContent = d.segments;
-    $('fw-entry0').textContent = d.entry0;
-    $('fw-entry1').textContent = d.entry1;
+    $('fw-entry0').textContent = d.entry0 === '0x00000000' ? 'boot ROM' : d.entry0;
+    $('fw-entry1').textContent = d.entry1 === '0x00000000' ? 'boot ROM' : d.entry1;
     $('fw-info').style.display = 'block';
     $('status').textContent = 'Firmware ready.';
     updateButtons();

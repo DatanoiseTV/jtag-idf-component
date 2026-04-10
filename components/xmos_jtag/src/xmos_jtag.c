@@ -362,7 +362,164 @@ void xmos_jtag_deinit(xmos_jtag_handle_t handle)
 }
 
 /* =========================================================================
- * Public API: Identify
+ * Known JTAG manufacturer/part database (for chain display)
+ * ======================================================================= */
+
+typedef struct {
+    uint32_t id_mask;    /* IDCODE & mask */
+    uint32_t id_match;   /* Expected value */
+    const char *name;
+    uint8_t ir_len;
+} jtag_known_device_t;
+
+static const jtag_known_device_t s_known_devices[] = {
+    /* XMOS */
+    { 0x0FFFFFFF, 0x00005633, "XMOS xCORE-200 (XU21x)", 4 },
+    { 0x0FFFFFFF, 0x00006633, "XMOS xCORE.ai (XU316)",  4 },
+    { 0x0FFFFFFF, 0x00002633, "XMOS XS1-G1",            4 },
+    { 0x0FFFFFFF, 0x00104731, "XMOS XS1-G4",            4 },
+    { 0x0FFFFFFF, 0x00003633, "XMOS XS1-SU",            4 },
+    /* Lattice */
+    { 0x0FFFFFFF, 0x0012B043, "Lattice iCE40UP5K",      8 },
+    { 0x0FFFFFFF, 0x0021111B, "Lattice ECP5-25",        8 },
+    { 0x0FFFFFFF, 0x0041111B, "Lattice ECP5-45",        8 },
+    { 0x0FFFFFFF, 0x0081111B, "Lattice ECP5-85",        8 },
+    /* Xilinx / AMD */
+    { 0x0FFFFFFF, 0x03631093, "Xilinx XC7A35T",         6 },
+    { 0x0FFFFFFF, 0x03636093, "Xilinx XC7A100T",        6 },
+    { 0x0FFFFFFF, 0x13631093, "Xilinx XC7A35T",         6 },
+    /* Espressif (JTAG debug) */
+    { 0x0FFF0FFF, 0x0000120F, "Espressif ESP32",        5 },
+    { 0x0FFF0FFF, 0x0000220F, "Espressif ESP32-S2",     5 },
+    { 0x0FFF0FFF, 0x0000320F, "Espressif ESP32-S3",     5 },
+    /* ARM DAP */
+    { 0x0F000FFF, 0x0B000477, "ARM CoreSight DAP",      4 },
+    /* Sentinel */
+    { 0, 0, NULL, 0 },
+};
+
+static const jtag_known_device_t *lookup_device(uint32_t idcode)
+{
+    for (const jtag_known_device_t *d = s_known_devices; d->name; d++) {
+        if ((idcode & d->id_mask) == d->id_match)
+            return d;
+    }
+    return NULL;
+}
+
+/* JEDEC JEP106 manufacturer lookup (common ones) */
+static const char *lookup_manufacturer(uint16_t mfg_id)
+{
+    switch (mfg_id) {
+        case 0x049: return "XMOS";
+        case 0x093: return "Xilinx/AMD";
+        case 0x06E: return "Lattice";
+        case 0x00F: return "Espressif"; /* custom bank */
+        case 0x23B: return "ARM";
+        case 0x04F: return "Atmel/Microchip";
+        case 0x0E5: return "Intel/Altera";
+        case 0x01F: return "Atmel";
+        case 0x020: return "ST";
+        case 0x04A: return "GigaDevice";
+        default:    return NULL;
+    }
+}
+
+/* =========================================================================
+ * Public API: Chain scan
+ * ======================================================================= */
+
+esp_err_t xmos_jtag_scan_chain(xmos_jtag_handle_t h, jtag_chain_t *chain)
+{
+    esp_err_t err;
+    memset(chain, 0, sizeof(*chain));
+
+    /* Close MUX if open */
+    if (h->mux_open) {
+        mux_select(h, XMOS_MUX_NC);
+    }
+
+    /* Reset TAP -- after reset, all devices load IDCODE (or BYPASS) into DR */
+    h->mux_open = false;
+    h->mux_state = -1;
+    err = h->transport->reset(h->transport);
+    if (err != ESP_OK) return err;
+
+    /*
+     * Read IDCODEs from the chain.
+     *
+     * After TAP reset, DR is loaded with IDCODE for each device.
+     * Shift out 32 bits per device. An IDCODE has bit 0 = 1.
+     * A BYPASS register has 1 bit = 0.
+     * All-1s (0xFFFFFFFF) means end of chain.
+     */
+    size_t total_bits = JTAG_CHAIN_MAX_DEVICES * 32;
+    size_t total_bytes = total_bits / 8;
+    uint8_t *tdi = calloc(1, total_bytes);
+    uint8_t *tdo = calloc(1, total_bytes);
+    if (!tdi || !tdo) { free(tdi); free(tdo); return ESP_ERR_NO_MEM; }
+
+    /* Shift zeros in, capture IDCODEs out */
+    err = h->transport->shift_dr(h->transport, tdi, tdo, total_bits);
+    free(tdi);
+    if (err != ESP_OK) { free(tdo); return err; }
+
+    /* Parse IDCODEs from the captured data */
+    size_t bit_pos = 0;
+    while (chain->num_devices < JTAG_CHAIN_MAX_DEVICES && bit_pos < total_bits) {
+        /* Check bit 0: if 1 = IDCODE (32 bits), if 0 = BYPASS (1 bit) */
+        int bit0 = (tdo[bit_pos / 8] >> (bit_pos % 8)) & 1;
+
+        if (!bit0) {
+            /* BYPASS device -- skip 1 bit. We can't determine IDCODE. */
+            bit_pos++;
+            continue;
+        }
+
+        /* Extract 32-bit IDCODE */
+        if (bit_pos + 32 > total_bits) break;
+
+        uint32_t idcode = 0;
+        for (int b = 0; b < 32; b++) {
+            size_t p = bit_pos + b;
+            idcode |= (uint32_t)((tdo[p / 8] >> (p % 8)) & 1) << b;
+        }
+        bit_pos += 32;
+
+        /* All-1s = end of chain */
+        if (idcode == 0xFFFFFFFF) break;
+
+        jtag_chain_device_t *dev = &chain->devices[chain->num_devices];
+        dev->idcode = idcode;
+        dev->manufacturer = (idcode >> 1) & 0x7FF;
+        dev->part_number = (idcode >> 12) & 0xFFFF;
+        dev->version = (idcode >> 28) & 0xF;
+
+        /* Look up in known device table */
+        const jtag_known_device_t *known = lookup_device(idcode);
+        if (known) {
+            dev->name = known->name;
+            dev->ir_len = known->ir_len;
+        } else {
+            const char *mfg_name = lookup_manufacturer(dev->manufacturer);
+            dev->name = mfg_name ? mfg_name : "Unknown";
+            dev->ir_len = 0;
+        }
+
+        ESP_LOGI(TAG, "Chain[%zu]: IDCODE=0x%08lx %s (mfg=0x%03x part=0x%04x ver=%d)",
+                 chain->num_devices, (unsigned long)idcode, dev->name,
+                 dev->manufacturer, dev->part_number, dev->version);
+
+        chain->num_devices++;
+    }
+
+    free(tdo);
+    ESP_LOGI(TAG, "Chain scan: %zu device(s) found", chain->num_devices);
+    return ESP_OK;
+}
+
+/* =========================================================================
+ * Public API: Identify (XMOS-specific)
  * ======================================================================= */
 
 esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
