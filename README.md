@@ -6,9 +6,7 @@ A general-purpose JTAG programmer component for ESP-IDF. Scan chains, program FP
 
 ---
 
-<img width="3360" height="1892" alt="Web UI" src="https://github.com/user-attachments/assets/013fa2a7-c98d-4f61-907a-104fcb167ac7" />
-
-<img width="1728" height="1030" alt="Logic analyzer capture" src="https://github.com/user-attachments/assets/e37209d1-0885-47a6-9ec6-7d385134b64d" />
+<img width="766" height="579" alt="Screenshot 2026-04-10 at 22 47 39" src="https://github.com/user-attachments/assets/7fd63ede-c594-4aef-853a-fe4208c1809c" />
 
 ---
 
@@ -257,6 +255,9 @@ Verified against `tool_axe` reference parser **and** real multi-tile satellite f
 ---
 
 ## Tests
+
+
+<img width="1728" height="1030" alt="Logic analyzer capture" src="https://github.com/user-attachments/assets/e37209d1-0885-47a6-9ec6-7d385134b64d" />
 
 **56 host-side tests** -- run on your dev machine, no hardware needed:
 
