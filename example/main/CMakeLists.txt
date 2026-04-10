@@ -9,7 +9,7 @@ set(requires
 if(NOT IDF_TARGET STREQUAL "esp32p4")
     list(APPEND requires esp_wifi)
 else()
-    list(APPEND requires esp_eth esp_hw_support)
+    list(APPEND requires esp_eth)
 endif()
 
 idf_component_register(
