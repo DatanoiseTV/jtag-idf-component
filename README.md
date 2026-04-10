@@ -9,6 +9,9 @@ Builds with **ESP-IDF v6.0** (also compatible with v5.x). Verified compiling for
 
 <img width="3360" height="1892" alt="image" src="https://github.com/user-attachments/assets/013fa2a7-c98d-4f61-907a-104fcb167ac7" />
 
+## Protocol Verification
+
+<img width="1728" height="1030" alt="Screenshot 2026-04-10 at 21 34 46" src="https://github.com/user-attachments/assets/f7caee16-3add-47a8-b917-8e186e03ca27" />
 
 ## Features
 
