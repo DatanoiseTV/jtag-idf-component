@@ -23,6 +23,31 @@ An ESP-IDF component that turns any ESP32 into a full-featured XMOS JTAG program
 | **Two backends** | GPIO bit-bang on any ESP32 (1-5 MHz) **or** PARLIO DMA on ESP32-P4 (up to 40 MHz) |
 | **Web UI** | Visual chain diagram, firmware inspector, one-click flash -- no tools to install |
 
+## Use Cases
+
+**Production & Manufacturing**
+- Flash XMOS firmware on the assembly line without a PC -- just an ESP32, a browser, and a JTAG cable
+- Boundary scan for board-level continuity testing before functional test
+- Chain scan to verify correct device population and orientation
+
+**CI / CD & Automated Testing**
+- Drive the ESP32 flasher from a test script over HTTP (`curl -X POST /api/upload ...`)
+- Load nightly builds to RAM, run tests, repeat -- no flash wear, instant boot
+- Gate firmware releases on automated JTAG connectivity checks
+
+**Field Updates & OTA**
+- ESP32 pulls new XMOS firmware over WiFi/Ethernet, then JTAG-boots the target -- true over-the-air updates for devices with no native XMOS network stack
+- Dual-bank strategy: load to RAM for validation, then commit to SPI flash only if self-test passes
+
+**Development & Debugging**
+- Rapid edit-compile-load cycle without an XTAG adapter
+- Inspect I/O pin states in real time via boundary scan from any browser
+- Identify unknown or mislabelled XMOS parts via IDCODE + chain scan
+
+**Multi-Device Systems**
+- Single ESP32 manages the JTAG chain of an entire board (XMOS + FPGA + MCU)
+- Chain visualization shows every device -- useful for bring-up of complex PCBs
+
 ## Supported Devices
 
 | Family | Chips | IDCODE | Tiles |
