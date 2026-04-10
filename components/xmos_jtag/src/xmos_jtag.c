@@ -422,6 +422,119 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
 }
 
 /* =========================================================================
+ * Public API: Boundary scan
+ * ======================================================================= */
+
+esp_err_t xmos_jtag_bscan_detect(xmos_jtag_handle_t h, size_t *bsr_len)
+{
+    esp_err_t err;
+    *bsr_len = 0;
+
+    /* Ensure MUX is closed so we're talking to the top-level BSCAN TAP only */
+    if (h->mux_open) {
+        err = mux_select(h, XMOS_MUX_NC);
+        if (err != ESP_OK) return err;
+    }
+
+    /* Reset TAP to known state */
+    err = h->transport->reset(h->transport);
+    if (err != ESP_OK) return err;
+    h->mux_open = false;
+    h->mux_state = -1;
+
+    /* Select SAMPLE/PRELOAD -- this connects the BSR as the DR */
+    err = shift_ir_val(h, XMOS_BSCAN_IR_SAMPLE, XMOS_BSCAN_IR_LEN);
+    if (err != ESP_OK) return err;
+
+    /*
+     * Auto-detect BSR length:
+     *   1. Shift all-zeros into DR to flush
+     *   2. Shift a single 1-bit followed by zeros
+     *   3. Count how many clocks until the 1-bit appears on TDO
+     *
+     * We try up to 2048 bits (generous upper bound for any XMOS package).
+     */
+    #define BSR_MAX_PROBE 2048
+    size_t probe_bytes = (BSR_MAX_PROBE + 7) / 8;
+    uint8_t *tdi = calloc(1, probe_bytes);
+    uint8_t *tdo = calloc(1, probe_bytes);
+    if (!tdi || !tdo) {
+        free(tdi); free(tdo);
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Set bit 0 = 1 (the marker), rest zeros */
+    tdi[0] = 0x01;
+
+    err = h->transport->shift_dr(h->transport, tdi, tdo, BSR_MAX_PROBE);
+    free(tdi);
+
+    if (err != ESP_OK) {
+        free(tdo);
+        return err;
+    }
+
+    /* Find the first 1-bit in the output -- that's the BSR length */
+    for (size_t i = 1; i < BSR_MAX_PROBE; i++) {
+        if ((tdo[i / 8] >> (i % 8)) & 1) {
+            *bsr_len = i;
+            break;
+        }
+    }
+    free(tdo);
+
+    if (*bsr_len == 0) {
+        ESP_LOGW(TAG, "BSR length detection failed (no marker found in %d bits)", BSR_MAX_PROBE);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "BSR length: %zu bits", *bsr_len);
+    return ESP_OK;
+    #undef BSR_MAX_PROBE
+}
+
+esp_err_t xmos_jtag_bscan_sample(xmos_jtag_handle_t h,
+                                 uint8_t *bsr_data, size_t bsr_len)
+{
+    esp_err_t err;
+
+    if (h->mux_open) {
+        err = mux_select(h, XMOS_MUX_NC);
+        if (err != ESP_OK) return err;
+    }
+
+    /* SAMPLE/PRELOAD captures current pin states into BSR */
+    err = shift_ir_val(h, XMOS_BSCAN_IR_SAMPLE, XMOS_BSCAN_IR_LEN);
+    if (err != ESP_OK) return err;
+
+    /* Shift out BSR contents (shift in zeros -- doesn't affect pins) */
+    size_t bytes = (bsr_len + 7) / 8;
+    uint8_t *tdi = calloc(1, bytes);
+    if (!tdi) return ESP_ERR_NO_MEM;
+
+    err = h->transport->shift_dr(h->transport, tdi, bsr_data, bsr_len);
+    free(tdi);
+    return err;
+}
+
+esp_err_t xmos_jtag_bscan_extest(xmos_jtag_handle_t h,
+                                 const uint8_t *bsr_data, size_t bsr_len)
+{
+    esp_err_t err;
+
+    if (h->mux_open) {
+        err = mux_select(h, XMOS_MUX_NC);
+        if (err != ESP_OK) return err;
+    }
+
+    /* EXTEST drives physical pins from BSR contents */
+    err = shift_ir_val(h, XMOS_BSCAN_IR_EXTEST, XMOS_BSCAN_IR_LEN);
+    if (err != ESP_OK) return err;
+
+    return h->transport->shift_dr(h->transport, bsr_data, NULL, bsr_len);
+}
+
+/* =========================================================================
  * Public API: Register access
  * ======================================================================= */
 

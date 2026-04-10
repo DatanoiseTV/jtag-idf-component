@@ -97,6 +97,46 @@ esp_err_t xmos_jtag_write_reg(xmos_jtag_handle_t handle,
                               int tile, uint8_t reg, uint32_t value);
 
 /* -------------------------------------------------------------------------
+ * Boundary scan
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Auto-detect the boundary scan register (BSR) length.
+ *
+ * Shifts a marker bit through DR with SAMPLE IR and counts how many
+ * clocks until it comes out.  Works with any IEEE 1149.1 TAP without
+ * needing a BSDL file.
+ *
+ * @param bsr_len  Receives the BSR length in bits (0 if detection fails)
+ */
+esp_err_t xmos_jtag_bscan_detect(xmos_jtag_handle_t handle,
+                                 size_t *bsr_len);
+
+/**
+ * Capture the current state of all I/O pins via SAMPLE/PRELOAD.
+ *
+ * The BSR is read non-destructively -- pin states are not affected.
+ * Call xmos_jtag_bscan_detect() first to determine `bsr_len`.
+ *
+ * @param bsr_data  Output buffer, at least ceil(bsr_len/8) bytes
+ * @param bsr_len   BSR length in bits (from bscan_detect)
+ */
+esp_err_t xmos_jtag_bscan_sample(xmos_jtag_handle_t handle,
+                                 uint8_t *bsr_data, size_t bsr_len);
+
+/**
+ * Drive I/O pins via EXTEST.
+ *
+ * WARNING: This overrides normal pin function and drives the physical
+ * pins from the boundary scan register.  Use with caution.
+ *
+ * @param bsr_data  BSR data to drive, ceil(bsr_len/8) bytes
+ * @param bsr_len   BSR length in bits
+ */
+esp_err_t xmos_jtag_bscan_extest(xmos_jtag_handle_t handle,
+                                 const uint8_t *bsr_data, size_t bsr_len);
+
+/* -------------------------------------------------------------------------
  * Memory access (core must be in debug mode)
  * ---------------------------------------------------------------------- */
 

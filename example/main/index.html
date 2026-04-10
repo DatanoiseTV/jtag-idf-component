@@ -137,6 +137,35 @@
     </div>
   </div>
 
+  <!-- Boundary Scan -->
+  <div class="card" id="bscan-card" style="display:none">
+    <div class="card-title">Boundary Scan</div>
+    <div class="info-grid">
+      <div class="info-item">
+        <label>BSR Length</label>
+        <div class="val" id="bsr-len">--</div>
+      </div>
+      <div class="info-item">
+        <label>Last Capture</label>
+        <div class="val" id="bsr-time">--</div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button onclick="bscan()">Capture Pins</button>
+      <button onclick="bscanAuto()" id="btn-auto">Auto Refresh</button>
+    </div>
+    <div id="bsr-display" style="display:none; margin-top:0.75rem">
+      <div style="font-size:0.7rem; color:var(--text2); margin-bottom:0.25rem">
+        Hex (MSB first)
+      </div>
+      <div id="bsr-hex" style="font-family:monospace; font-size:0.8rem; word-break:break-all; color:var(--accent)"></div>
+      <div style="font-size:0.7rem; color:var(--text2); margin-top:0.5rem; margin-bottom:0.25rem">
+        Pin states (MSB first, bit index shown on hover)
+      </div>
+      <div id="bsr-bits" style="font-family:monospace; font-size:0.75rem; line-height:1.6; word-break:break-all"></div>
+    </div>
+  </div>
+
   <!-- Firmware Upload -->
   <div class="card">
     <div class="card-title">Firmware</div>
@@ -220,11 +249,55 @@ async function identify() {
     $('family').className = 'val ' + (d.ok ? 'ok' : 'err');
     $('tiles').textContent = d.tiles;
     $('revision').textContent = d.revision;
-    if (d.ok) updateButtons();
+    if (d.ok) {
+      updateButtons();
+      if (d.bsr_len > 0) {
+        $('bscan-card').style.display = 'block';
+        $('bsr-len').textContent = d.bsr_len + ' bits';
+      }
+    }
   } catch(e) {
     $('family').textContent = 'Error: ' + e.message;
     $('family').className = 'val err';
   }
+}
+
+/* Boundary scan */
+let autoTimer = null;
+
+async function bscan() {
+  try {
+    const r = await fetch('/api/bscan');
+    const d = await r.json();
+    $('bsr-display').style.display = 'block';
+    $('bsr-hex').textContent = d.hex;
+    $('bsr-time').textContent = new Date().toLocaleTimeString();
+
+    /* Render bits with color: 1=green, 0=dim */
+    let html = '';
+    const bits = d.bits;
+    for (let i = 0; i < bits.length; i++) {
+      const bitIdx = bits.length - 1 - i;
+      const c = bits[i] === '1' ? 'var(--green)' : 'var(--border)';
+      html += '<span title="bit ' + bitIdx + '" style="color:' + c + '">' + bits[i] + '</span>';
+      if ((i + 1) % 8 === 0 && i < bits.length - 1) html += ' ';
+    }
+    $('bsr-bits').innerHTML = html;
+  } catch(e) {
+    $('bsr-hex').textContent = 'Error: ' + e.message;
+  }
+}
+
+function bscanAuto() {
+  if (autoTimer) {
+    clearInterval(autoTimer);
+    autoTimer = null;
+    $('btn-auto').textContent = 'Auto Refresh';
+    return;
+  }
+  autoTimer = setInterval(bscan, 500);
+  $('btn-auto').textContent = 'Stop Auto';
+  bscan();
 }
 
 function updateButtons() {

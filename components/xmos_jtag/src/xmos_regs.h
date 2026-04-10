@@ -15,8 +15,9 @@
  * Top-level JTAG TAP (boundary scan TAP) -- 4-bit IR
  * ======================================================================= */
 #define XMOS_BSCAN_IR_LEN            4
+#define XMOS_BSCAN_IR_EXTEST         0x0   /* Drive pins from BSR */
 #define XMOS_BSCAN_IR_IDCODE         0x1
-#define XMOS_BSCAN_IR_SAMPLE         0x2
+#define XMOS_BSCAN_IR_SAMPLE         0x2   /* Capture pin states (non-destructive) */
 #define XMOS_BSCAN_IR_SETMUX         0x4
 #define XMOS_BSCAN_IR_SET_TEST_MODE  0x8
 #define XMOS_BSCAN_IR_BYPASS         0xF
