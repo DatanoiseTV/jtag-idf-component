@@ -11,12 +11,7 @@ Builds with **ESP-IDF v6.0** (also compatible with v5.x). Verified compiling for
 
 ## Protocol Verification
 
-<img width="1728" height="1030" alt="Screenshot 2026-04-10 at 21 34 46" src="https://github.com/user-attachments/assets/f7caee16-3add-47a8-b917-8e186e03ca27" />
-
-## Features
-
-- **Load firmware to xCORE RAM** via JTAG boot mode (parse `.xe` or raw binaries)
-- **Program SPI flash** via a JTAG-loaded stub running on the xCORE
+<img width="1728" height="1030" alt="Screenshot 2026-04-10 at 21 36 38" src="https://github.com/user-attachments/assets/e37209d1-0885-47a6-9ec6-7d385134b64d" />CORE
 - **Direct SPI flash programming** by holding XMOS in reset and bit-banging SPI
 - **Two JTAG transport backends:**
   - **GPIO bit-bang** -- works on any ESP32 variant (S2, S3, C3, C6, H2, P4, ...)
