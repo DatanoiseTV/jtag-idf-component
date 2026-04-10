@@ -29,6 +29,7 @@
 #endif
 
 #if CONFIG_IDF_TARGET_ESP32P4
+#include "esp_ldo_regulator.h"
 #include "esp_eth.h"
 #include "esp_eth_mac.h"
 #include "esp_eth_phy.h"
@@ -49,20 +50,21 @@ static const char *TAG = "xmos_web";
 /*
  * JTAG pins -- adjust for your board.
  *
- * ESP32-P4-NANO: right header rows 7-10
- *   Ethernet uses GPIO28-35,49-52 so JTAG goes on the remaining GPIOs.
- *   Available: 2,3,4,5,6,20,21,22,23,45,46,47,48,53,54
- *   Using: 4,5,6,2 (left+right header, physically accessible)
+ * ESP32-P4-NANO: GPIO39-44 are powered by internal LDO_VO4.
+ *   We set LDO_VO4 to 1.8V to match XMOS JTAG I/O levels directly --
+ *   no level shifters needed.  6 pins: TCK, TMS, TDI, TDO, TRST, SRST.
  *
- * ESP32-S3: safe GPIO pins avoiding strapping/PSRAM/USB
+ * ESP32-S3: 3.3V I/O -- use level shifters for 1.8V XMOS JTAG.
  */
 #if CONFIG_IDF_TARGET_ESP32P4
-#define PIN_TCK             GPIO_NUM_4
-#define PIN_TMS             GPIO_NUM_5
-#define PIN_TDI             GPIO_NUM_6
-#define PIN_TDO             GPIO_NUM_2
-#define PIN_TRST            GPIO_NUM_NC
-#define PIN_SRST            GPIO_NUM_3
+#define PIN_TCK             GPIO_NUM_39
+#define PIN_TMS             GPIO_NUM_40
+#define PIN_TDI             GPIO_NUM_41
+#define PIN_TDO             GPIO_NUM_42
+#define PIN_TRST            GPIO_NUM_43
+#define PIN_SRST            GPIO_NUM_44
+#define JTAG_LDO_CHAN       4       /* LDO_VO4 powers GPIO39-44 */
+#define JTAG_LDO_MV        1800    /* 1.8V matches XMOS JTAG levels */
 #else
 #define PIN_TCK             GPIO_NUM_12
 #define PIN_TMS             GPIO_NUM_13
@@ -456,6 +458,18 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* Set LDO_VO4 to 1.8V -- powers GPIO39-44 used for JTAG.
+     * This matches XMOS JTAG I/O levels directly, no level shifters. */
+    esp_ldo_channel_handle_t ldo_handle;
+    esp_ldo_channel_config_t ldo_cfg = {
+        .chan_id = JTAG_LDO_CHAN,
+        .voltage_mv = JTAG_LDO_MV,
+    };
+    ESP_ERROR_CHECK(esp_ldo_acquire_channel(&ldo_cfg, &ldo_handle));
+    ESP_LOGI(TAG, "LDO_VO4 set to %d mV (GPIO39-44 = 1.8V JTAG)", JTAG_LDO_MV);
+#endif
 
     xmos_jtag_pins_t pins = {
         .tck = PIN_TCK, .tms = PIN_TMS, .tdi = PIN_TDI, .tdo = PIN_TDO,
