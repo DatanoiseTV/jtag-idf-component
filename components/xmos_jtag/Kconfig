@@ -1,0 +1,41 @@
+menu "XMOS JTAG Programmer"
+
+    choice XMOS_JTAG_BACKEND
+        prompt "JTAG transport backend"
+        default XMOS_JTAG_BACKEND_GPIO
+        help
+            Select the low-level JTAG transport.
+
+        config XMOS_JTAG_BACKEND_GPIO
+            bool "GPIO bit-bang"
+            help
+                Bit-bang JTAG over GPIO pins. Works on all ESP32 variants.
+                Typical throughput: 1-5 MHz TCK depending on chip.
+
+        config XMOS_JTAG_BACKEND_PARLIO
+            bool "Parallel IO (PARLIO) with DMA"
+            depends on SOC_PARLIO_SUPPORTED
+            help
+                Use the PARLIO peripheral with DMA for high-speed JTAG.
+                Available on ESP32-P4. Up to ~40 MHz TCK.
+    endchoice
+
+    config XMOS_JTAG_TCK_FREQ_KHZ
+        int "TCK frequency (kHz)"
+        default 1000 if XMOS_JTAG_BACKEND_GPIO
+        default 10000 if XMOS_JTAG_BACKEND_PARLIO
+        range 100 40000
+        help
+            JTAG clock frequency in kHz.
+            GPIO backend: limited by CPU speed, realistic max ~5000.
+            PARLIO backend: up to 40000 (40 MHz).
+
+    config XMOS_JTAG_PARLIO_DMA_BUF_SIZE
+        int "PARLIO DMA buffer size (bytes)"
+        default 4096
+        depends on XMOS_JTAG_BACKEND_PARLIO
+        help
+            Size of each DMA buffer for PARLIO transfers.
+            Larger buffers reduce DMA overhead for bulk transfers.
+
+endmenu

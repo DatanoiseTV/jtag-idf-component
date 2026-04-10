@@ -1,0 +1,10 @@
+build/
+sdkconfig
+sdkconfig.old
+*.o
+*.d
+test/test_xe_parser
+.vscode/
+.idea/
+*.swp
+*.swo
