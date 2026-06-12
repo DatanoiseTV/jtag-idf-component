@@ -81,7 +81,10 @@ static size_t build_shift_sequence(bool is_ir, const uint8_t *tdi,
         /* Select-DR -> Select-IR-Scan (TMS=1) */
         EMIT(1, 0);
     }
-    /* Capture-xR (TMS=0) */
+    /* Select-xR -> Capture-xR (TMS=0) */
+    EMIT(0, 0);
+    /* Capture-xR -> Shift-xR (TMS=0) -- the TAP only shifts on rising
+     * edges taken IN Shift-xR, so this cycle must precede the data bits */
     EMIT(0, 0);
     /* Shift data bits: TMS=0 for all but last, TMS=1 for last */
     for (size_t i = 0; i < bits; i++) {
@@ -161,7 +164,7 @@ static esp_err_t parlio_do_shift(jtag_parlio_ctx_t *ctx, bool is_ir,
 {
     if (bits == 0) return ESP_OK;
 
-    size_t nav_pre = is_ir ? 3 : 2;  /* cycles before first data bit */
+    size_t nav_pre = is_ir ? 4 : 3;  /* cycles before first data bit */
     size_t total_cycles = nav_pre + bits + 2;  /* +2 for update+RTI */
     size_t tx_bytes = (total_cycles + 3) / 4;  /* 4 cycles per byte */
     size_t rx_bytes = (total_cycles + 7) / 8;  /* 8 samples per byte */
@@ -364,8 +367,11 @@ esp_err_t jtag_transport_parlio_create(const xmos_jtag_pins_t *pins,
 
     /* Soft delimiter: eof_data_len triggers end-of-frame after N bytes.
      * Set to buf_size so it captures the full buffer, then we stop manually. */
+    /* Sample TDO on the RISING edge of TCK: the target updates TDO on the
+     * falling edge, so it is stable at the next rising edge.  Sampling on
+     * the falling edge would race the target's output transition. */
     parlio_rx_soft_delimiter_config_t delim_cfg = {
-        .sample_edge = PARLIO_SAMPLE_EDGE_NEG,
+        .sample_edge = PARLIO_SAMPLE_EDGE_POS,
         .bit_pack_order = PARLIO_BIT_PACK_ORDER_LSB,
         .eof_data_len = ctx->buf_size,
         .timeout_ticks = tck_freq_hz / 10,  /* 100ms timeout safety */

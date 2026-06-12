@@ -25,21 +25,27 @@ typedef struct {
 /* -------------------------------------------------------------------------
  * One JTAG clock cycle
  *
- * JTAG spec: TMS and TDI are sampled on rising edge of TCK.
- * TDO changes on falling edge and is valid before next rising edge.
+ * JTAG spec: TMS and TDI are sampled by the target on the rising edge of
+ * TCK; the target updates TDO on the falling edge.  TDO must therefore be
+ * sampled while TCK is low, BEFORE the rising edge -- it carries the bit
+ * produced by the previous falling edge.  Sampling after our own falling
+ * edge would return the next bit (off-by-one).
  * ---------------------------------------------------------------------- */
 static inline int jtag_clock(jtag_gpio_ctx_t *ctx, int tms, int tdi)
 {
     gpio_set_level(ctx->pins.tms, tms);
     gpio_set_level(ctx->pins.tdi, tdi);
 
+    /* Sample TDO while TCK is still low */
+    int tdo = gpio_get_level(ctx->pins.tdo);
+
     /* Rising edge -- device samples TMS/TDI */
     gpio_set_level(ctx->pins.tck, 1);
 
-    /* Falling edge -- device updates TDO */
+    /* Falling edge -- device updates TDO for the next cycle */
     gpio_set_level(ctx->pins.tck, 0);
 
-    return gpio_get_level(ctx->pins.tdo);
+    return tdo;
 }
 
 /* -------------------------------------------------------------------------
@@ -72,6 +78,12 @@ static esp_err_t gpio_reset(jtag_transport_t *self)
  *
  * Navigation: RTI -> Select-xR -> Capture-xR -> Shift-xR (shift bits)
  *             -> Exit1-xR -> Update-xR -> RTI
+ *
+ * The TAP shifts only on rising edges that occur IN the Shift-xR state,
+ * so a dedicated TMS=0 cycle is needed to move Capture-xR -> Shift-xR
+ * before the first data bit (same TMS path OpenOCD uses: 1,0,0 from RTI
+ * to Shift-DR).  Without it, the first data clock is eaten by the state
+ * transition and the scan comes up one bit short.
  */
 static esp_err_t gpio_shift(jtag_gpio_ctx_t *ctx, bool is_ir,
                             const uint8_t *tdi, uint8_t *tdo, size_t bits)
@@ -87,7 +99,10 @@ static esp_err_t gpio_shift(jtag_gpio_ctx_t *ctx, bool is_ir,
         jtag_clock(ctx, 1, 0);
     }
 
-    /* Capture (TMS=0) */
+    /* Select-xR -> Capture-xR */
+    jtag_clock(ctx, 0, 0);
+
+    /* Capture-xR -> Shift-xR */
     jtag_clock(ctx, 0, 0);
 
     if (tdo)
