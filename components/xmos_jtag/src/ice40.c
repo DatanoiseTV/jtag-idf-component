@@ -50,13 +50,17 @@ static void spi_init(const ice40_pins_t *p)
     }
 }
 
-/* SPI mode 3: CPOL=1, CPHA=1. Clock idles high, data on falling edge. */
+/*
+ * iCE40 slave configuration samples SI on the RISING edge of SCLK,
+ * MSB first (TN1248).  Present the bit while the clock is low, then
+ * generate the rising edge.
+ */
 static void spi_send_byte(const ice40_pins_t *p, uint8_t byte)
 {
     for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(p->spi_mosi, (byte >> bit) & 1);
-        gpio_set_level(p->spi_clk, 0);  /* falling edge -- data latched */
-        gpio_set_level(p->spi_clk, 1);  /* rising edge */
+        gpio_set_level(p->spi_clk, 0);  /* ensure low phase, bit set up */
+        gpio_set_level(p->spi_clk, 1);  /* rising edge -- device samples SI */
     }
 }
 
@@ -86,15 +90,21 @@ static bool cdone_is_high(const ice40_pins_t *p)
 #define FLASH_CMD_READ_JEDEC      0x9F
 #define FLASH_STATUS_WIP          0x01
 
+/*
+ * SPI mode 0 transfer: MOSI set while SCLK low, slave latches MOSI on the
+ * rising edge.  MISO is stable from the previous falling edge through the
+ * rising edge, so sample it after the rising edge -- sampling right after
+ * our own falling edge would race the flash's clock-to-output delay.
+ */
 static uint8_t spi_xfer_byte(const ice40_pins_t *p, uint8_t out)
 {
     uint8_t in = 0;
     for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(p->spi_mosi, (out >> bit) & 1);
-        gpio_set_level(p->spi_clk, 0);
+        gpio_set_level(p->spi_clk, 1);
         if (p->spi_miso != GPIO_NUM_NC)
             in |= (gpio_get_level(p->spi_miso) << bit);
-        gpio_set_level(p->spi_clk, 1);
+        gpio_set_level(p->spi_clk, 0);
     }
     return in;
 }
@@ -140,27 +150,29 @@ esp_err_t ice40_program_cram(const ice40_pins_t *pins,
         }
     }
 
-    /* 4. Send 100 dummy clocks (>= 49 required, 100 for safety) */
-    spi_send_clocks(pins, 100);
+    /* 4. Keep CS low and send dummy clocks until CDONE goes high.
+     * TN1248: >= 49 SCLK cycles after the bitstream for CDONE, then
+     * >= 49 additional cycles to complete user-mode wake-up.  CDONE only
+     * advances while the device is being clocked, so clock while polling. */
+    spi_send_clocks(pins, 56);
 
-    /* 5. Release SPI CS */
-    gpio_set_level(pins->spi_cs, 1);
-
-    /* 6. Send a few more clocks for wake-up */
-    spi_send_clocks(pins, 10);
-
-    /* 7. Wait for CDONE */
     if (timeout_ms > 0 && pins->cdone != GPIO_NUM_NC) {
         uint32_t elapsed = 0;
         while (!cdone_is_high(pins) && elapsed < timeout_ms) {
+            spi_send_clocks(pins, 8);
             esp_rom_delay_us(1000);
             elapsed++;
         }
         if (!cdone_is_high(pins)) {
+            gpio_set_level(pins->spi_cs, 1);
             ESP_LOGE(TAG, "CDONE did not go high after %lu ms", (unsigned long)timeout_ms);
             return ESP_ERR_TIMEOUT;
         }
     }
+
+    /* 5. Wake-up: >= 49 more clocks after CDONE, then release CS */
+    spi_send_clocks(pins, 56);
+    gpio_set_level(pins->spi_cs, 1);
 
     ESP_LOGI(TAG, "iCE40 CRAM programmed OK (%zu bytes)", length);
     return ESP_OK;
