@@ -8,20 +8,19 @@
  * and executes each command through the JTAG transport layer.
  */
 
+#include "sdkconfig.h"
 #include "jtag_svf.h"
 #include "jtag_transport.h"
 #include "xmos_jtag.h"
 #include "esp_log.h"
-#include "esp_rom_sys.h"
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 
 static const char *TAG = "svf";
 
-/* Access the transport from the opaque handle */
-struct xmos_jtag_ctx;
-extern struct jtag_transport *xmos_jtag_get_transport(void *handle);
+/* Access the transport from the opaque handle (defined in xmos_jtag.c) */
+extern jtag_transport_t *xmos_jtag_get_transport(xmos_jtag_handle_t handle);
 
 /* -------------------------------------------------------------------------
  * Internal types
@@ -33,14 +32,12 @@ typedef struct {
     uint8_t *tdi;
     uint8_t *tdo;
     uint8_t *mask;
-    size_t   alloc;   /* allocated byte size */
+    size_t   alloc;          /* allocated byte size */
+    bool     tdo_specified;  /* TDO present (comparison requested) */
 } svf_xyr_t;
 
 typedef struct {
     jtag_transport_t *transport;
-    /* SVF state */
-    int enddr;   /* 0=IDLE, 1=DRPAUSE */
-    int endir;   /* 0=IDLE, 1=IRPAUSE */
     /* Remembered data */
     svf_xyr_t hdr, hir, tdr, tir, sdr, sir;
     /* Stats */
@@ -60,7 +57,13 @@ static void xyr_free(svf_xyr_t *x)
     memset(x, 0, sizeof(*x));
 }
 
-static esp_err_t xyr_resize(svf_xyr_t *x, uint32_t bits)
+/*
+ * Resize a scan register.  Per the SVF spec, TDI/TDO/MASK are remembered
+ * between commands of the same length and reset when the length changes.
+ * Default MASK: all-care for SIR/SDR, all-don't-care for the header and
+ * trailer registers (HIR/HDR/TIR/TDR).
+ */
+static esp_err_t xyr_resize(svf_xyr_t *x, uint32_t bits, uint8_t mask_default)
 {
     size_t bytes = (bits + 7) / 8;
     if (bytes > x->alloc) {
@@ -74,10 +77,21 @@ static esp_err_t xyr_resize(svf_xyr_t *x, uint32_t bits)
     if (bits != x->len) {
         memset(x->tdi, 0, bytes);
         memset(x->tdo, 0, bytes);
-        memset(x->mask, 0xFF, bytes);  /* default mask = all care */
+        memset(x->mask, mask_default, bytes);
+        x->tdo_specified = false;
     }
     x->len = bits;
     return ESP_OK;
+}
+
+/* Copy `nbits` bits from src (LSB-first bit array) into dst at dst_off bits */
+static void copy_bits(uint8_t *dst, size_t dst_off,
+                      const uint8_t *src, size_t nbits)
+{
+    for (size_t i = 0; i < nbits; i++) {
+        if ((src[i / 8] >> (i % 8)) & 1)
+            dst[(dst_off + i) / 8] |= (uint8_t)(1u << ((dst_off + i) % 8));
+    }
 }
 
 /* Parse hex string like "DEADBEEF" into byte array (LSB at index 0).
@@ -85,6 +99,8 @@ static esp_err_t xyr_resize(svf_xyr_t *x, uint32_t bits)
 static void parse_hex_to_bytes(const char *hex, size_t hex_len,
                                uint8_t *out, size_t out_bytes)
 {
+    if (!out || out_bytes == 0)
+        return;
     memset(out, 0, out_bytes);
     /* Process from the end of the hex string */
     int byte_idx = 0, nibble = 0;
@@ -147,6 +163,24 @@ static const char *parse_paren_hex(const char *p, const char *end,
  * SVF command handlers
  * ---------------------------------------------------------------------- */
 
+/*
+ * Compare a region of the captured TDO stream (starting at bit_off) against
+ * the expected TDO/MASK of one scan register.  Returns true on match.
+ */
+static bool region_matches(const uint8_t *captured, size_t bit_off,
+                           const svf_xyr_t *x)
+{
+    for (uint32_t i = 0; i < x->len; i++) {
+        if (!((x->mask[i / 8] >> (i % 8)) & 1))
+            continue;
+        int got = (captured[(bit_off + i) / 8] >> ((bit_off + i) % 8)) & 1;
+        int exp = (x->tdo[i / 8] >> (i % 8)) & 1;
+        if (got != exp)
+            return false;
+    }
+    return true;
+}
+
 static esp_err_t handle_xyr(svf_ctx_t *ctx, const char *p, const char *end,
                             svf_xyr_t *xyr, int shift_type)
 {
@@ -155,14 +189,14 @@ static esp_err_t handle_xyr(svf_ctx_t *ctx, const char *p, const char *end,
     p = next_token(p, end, &tok, &tlen);  /* length field */
     uint32_t len = (uint32_t)strtoul(tok, NULL, 10);
 
-    esp_err_t err = xyr_resize(xyr, len);
+    esp_err_t err = xyr_resize(xyr, len, shift_type >= 0 ? 0xFF : 0x00);
     if (err != ESP_OK) return err;
-    if (len == 0) return ESP_OK;
 
     size_t bytes = (len + 7) / 8;
+    bool saw_tdo = false;
 
     /* Parse optional TDI, TDO, MASK, SMASK */
-    while (p < end) {
+    while (p < end && len > 0) {
         p = next_token(p, end, &tok, &tlen);
         if (tlen == 0) break;
 
@@ -170,59 +204,78 @@ static esp_err_t handle_xyr(svf_ctx_t *ctx, const char *p, const char *end,
             p = parse_paren_hex(p, end, xyr->tdi, bytes);
         } else if (tlen == 3 && strncasecmp(tok, "TDO", 3) == 0) {
             p = parse_paren_hex(p, end, xyr->tdo, bytes);
+            saw_tdo = true;
         } else if (tlen == 4 && strncasecmp(tok, "MASK", 4) == 0) {
             p = parse_paren_hex(p, end, xyr->mask, bytes);
         } else if (tlen == 5 && strncasecmp(tok, "SMASK", 5) == 0) {
-            /* SMASK: mask for TDI -- we apply it but don't store separately */
-            uint8_t *smask = calloc(1, bytes);
-            if (smask) {
-                p = parse_paren_hex(p, end, smask, bytes);
-                for (size_t i = 0; i < bytes; i++)
-                    xyr->tdi[i] &= smask[i];
-                free(smask);
-            }
+            /* SMASK marks TDI don't-care bits; it must NOT alter the
+             * driven TDI values, so parse and discard it. */
+            p = parse_paren_hex(p, end, NULL, 0);
         }
     }
 
-    /* Execute the shift if this is SIR or SDR */
-    if (shift_type >= 0 && len > 0) {
-        uint8_t *tdo_buf = calloc(1, bytes);
-        if (!tdo_buf) return ESP_ERR_NO_MEM;
+    if (shift_type < 0) {
+        /* Header/trailer register: TDO presence is sticky until the
+         * length changes (compared as part of every following scan). */
+        if (saw_tdo)
+            xyr->tdo_specified = true;
+        return ESP_OK;
+    }
 
-        if (shift_type == 0) {
-            err = ctx->transport->shift_ir(ctx->transport,
-                                           xyr->tdi, tdo_buf, len);
-        } else {
-            err = ctx->transport->shift_dr(ctx->transport,
-                                           xyr->tdi, tdo_buf, len);
-        }
+    /* SIR/SDR: a comparison happens iff TDO is present in THIS command
+     * (an expected value of all-zeros is still a real check). */
+    xyr->tdo_specified = saw_tdo;
 
-        if (err != ESP_OK) {
-            free(tdo_buf);
-            return err;
-        }
+    /* Build the full scan: header + data + trailer, header shifted first */
+    svf_xyr_t *head = (shift_type == 0) ? &ctx->hir : &ctx->hdr;
+    svf_xyr_t *tail = (shift_type == 0) ? &ctx->tir : &ctx->tdr;
 
-        /* Check TDO against expected value with mask */
-        bool has_tdo_check = false;
-        for (size_t i = 0; i < bytes; i++) {
-            if (xyr->tdo[i] != 0) { has_tdo_check = true; break; }
-        }
+    size_t total_bits = (size_t)head->len + len + tail->len;
+    if (total_bits == 0)
+        return ESP_OK;
+    size_t total_bytes = (total_bits + 7) / 8;
 
-        if (has_tdo_check) {
-            for (size_t i = 0; i < bytes; i++) {
-                if ((tdo_buf[i] ^ xyr->tdo[i]) & xyr->mask[i]) {
-                    ctx->mismatches++;
-                    ESP_LOGD(TAG, "TDO mismatch at byte %zu: got 0x%02x, expected 0x%02x (mask 0x%02x)",
-                             i, tdo_buf[i], xyr->tdo[i], xyr->mask[i]);
-                    if (ctx->stop_on_mismatch) {
-                        free(tdo_buf);
-                        return ESP_ERR_INVALID_RESPONSE;
-                    }
-                    break;
-                }
-            }
-        }
+    uint8_t *tdi_buf = calloc(1, total_bytes);
+    uint8_t *tdo_buf = calloc(1, total_bytes);
+    if (!tdi_buf || !tdo_buf) {
+        free(tdi_buf); free(tdo_buf);
+        return ESP_ERR_NO_MEM;
+    }
+
+    copy_bits(tdi_buf, 0, head->tdi, head->len);
+    copy_bits(tdi_buf, head->len, xyr->tdi, len);
+    copy_bits(tdi_buf, head->len + len, tail->tdi, tail->len);
+
+    if (shift_type == 0) {
+        err = ctx->transport->shift_ir(ctx->transport,
+                                       tdi_buf, tdo_buf, total_bits);
+    } else {
+        err = ctx->transport->shift_dr(ctx->transport,
+                                       tdi_buf, tdo_buf, total_bits);
+    }
+    free(tdi_buf);
+    if (err != ESP_OK) {
         free(tdo_buf);
+        return err;
+    }
+
+    /* Check captured TDO region by region */
+    bool ok = true;
+    if (head->tdo_specified && !region_matches(tdo_buf, 0, head))
+        ok = false;
+    if (ok && xyr->tdo_specified && !region_matches(tdo_buf, head->len, xyr))
+        ok = false;
+    if (ok && tail->tdo_specified &&
+        !region_matches(tdo_buf, head->len + len, tail))
+        ok = false;
+    free(tdo_buf);
+
+    if (!ok) {
+        ctx->mismatches++;
+        ESP_LOGW(TAG, "%s TDO mismatch (scan of %zu bits)",
+                 shift_type == 0 ? "SIR" : "SDR", total_bits);
+        if (ctx->stop_on_mismatch)
+            return ESP_ERR_INVALID_RESPONSE;
     }
 
     return ESP_OK;
@@ -231,7 +284,7 @@ static esp_err_t handle_xyr(svf_ctx_t *ctx, const char *p, const char *end,
 static esp_err_t handle_runtest(svf_ctx_t *ctx, const char *p, const char *end)
 {
     const char *tok; size_t tlen;
-    unsigned int clocks = 0;
+    uint64_t clocks = 0;
     double seconds = 0;
 
     while (p < end) {
@@ -249,18 +302,29 @@ static esp_err_t handle_runtest(svf_ctx_t *ctx, const char *p, const char *end)
             const char *unit_tok; size_t unit_len;
             p = next_token(p, end, &unit_tok, &unit_len);
             if (unit_len >= 3 && strncasecmp(unit_tok, "TCK", 3) == 0) {
-                clocks = (unsigned int)val;
+                clocks = (uint64_t)val;
             } else if (unit_len >= 3 && strncasecmp(unit_tok, "SEC", 3) == 0) {
                 seconds = val;
             }
         }
     }
 
-    if (clocks > 0) {
-        ctx->transport->idle(ctx->transport, clocks);
-    }
+    /* RUNTEST keeps the TAP in the run state with TCK running -- a plain
+     * delay would starve devices that clock internal logic from TCK.
+     * Convert a SEC requirement into TCK cycles at the configured rate
+     * (minimum time, so rounding up / overshooting is fine). */
     if (seconds > 0) {
-        esp_rom_delay_us((uint32_t)(seconds * 1e6));
+        uint64_t sec_clocks =
+            (uint64_t)(seconds * (double)CONFIG_XMOS_JTAG_TCK_FREQ_KHZ * 1000.0) + 1;
+        if (sec_clocks > clocks)
+            clocks = sec_clocks;
+    }
+
+    while (clocks > 0) {
+        unsigned chunk = (clocks > 0x10000000ull) ? 0x10000000u : (unsigned)clocks;
+        esp_err_t err = ctx->transport->idle(ctx->transport, chunk);
+        if (err != ESP_OK) return err;
+        clocks -= chunk;
     }
 
     return ESP_OK;
@@ -287,13 +351,6 @@ static esp_err_t handle_state(svf_ctx_t *ctx, const char *p, const char *end)
  * Main SVF parser loop
  * ---------------------------------------------------------------------- */
 
-/* We need access to the transport from the opaque handle.
- * Since the handle is xmos_jtag_ctx, and transport is the first useful field,
- * we define a minimal accessor. */
-typedef struct {
-    jtag_transport_t *transport;
-} jtag_handle_peek_t;
-
 esp_err_t svf_play(void *jtag_handle,
                    const char *svf_data, size_t svf_len,
                    const svf_config_t *config,
@@ -302,20 +359,19 @@ esp_err_t svf_play(void *jtag_handle,
     if (!jtag_handle || !svf_data || svf_len == 0)
         return ESP_ERR_INVALID_ARG;
 
-    jtag_handle_peek_t *peek = (jtag_handle_peek_t *)jtag_handle;
-
     svf_ctx_t ctx = {
-        .transport = peek->transport,
-        .enddr = 0,
-        .endir = 0,
+        .transport = xmos_jtag_get_transport((xmos_jtag_handle_t)jtag_handle),
         .stop_on_mismatch = config ? config->stop_on_mismatch : false,
     };
 
     const char *p = svf_data;
     const char *end = svf_data + svf_len;
 
-    /* Line buffer for multi-line statements (SVF statements end with ;) */
-    char *stmt = malloc(8192);
+    /* Statement buffer (SVF statements end with ;).  Grown on demand:
+     * vendor SVFs routinely carry single SDR statements of hundreds of KB
+     * (e.g. FPGA CRAM via JTAG), so a fixed buffer would truncate them. */
+    size_t stmt_cap = 8192;
+    char *stmt = malloc(stmt_cap);
     if (!stmt) return ESP_ERR_NO_MEM;
     size_t stmt_len = 0;
     esp_err_t err = ESP_OK;
@@ -341,11 +397,20 @@ esp_err_t svf_play(void *jtag_handle,
                 while (p < end && *p != '\n') p++;
                 continue;
             }
-            if (stmt_len < 8191) {
-                stmt[stmt_len++] = (char)toupper((unsigned char)*p);
+            if (stmt_len + 1 >= stmt_cap) {
+                size_t new_cap = stmt_cap * 2;
+                char *grown = realloc(stmt, new_cap);
+                if (!grown) {
+                    err = ESP_ERR_NO_MEM;
+                    break;
+                }
+                stmt = grown;
+                stmt_cap = new_cap;
             }
+            stmt[stmt_len++] = (char)toupper((unsigned char)*p);
             p++;
         }
+        if (err != ESP_OK) break;
         if (p < end && *p == ';') p++;  /* consume semicolon */
 
         if (stmt_len == 0) continue;
@@ -373,12 +438,18 @@ esp_err_t svf_play(void *jtag_handle,
             err = handle_runtest(&ctx, s, s_end);
         } else if (cmd_len == 5 && memcmp(cmd, "STATE", 5) == 0) {
             err = handle_state(&ctx, s, s_end);
-        } else if (cmd_len == 5 && memcmp(cmd, "ENDDR", 5) == 0) {
+        } else if (cmd_len == 5 && (memcmp(cmd, "ENDDR", 5) == 0 ||
+                                    memcmp(cmd, "ENDIR", 5) == 0)) {
+            /* The transport always returns to Run-Test/Idle after a scan
+             * and cannot park in a Pause state, so any end state other
+             * than IDLE cannot be honoured -- fail loudly rather than
+             * silently mis-executing every following scan. */
             s = next_token(s, s_end, &cmd, &cmd_len);
-            ctx.enddr = (cmd_len >= 4 && memcmp(cmd, "DRPA", 4) == 0) ? 1 : 0;
-        } else if (cmd_len == 5 && memcmp(cmd, "ENDIR", 5) == 0) {
-            s = next_token(s, s_end, &cmd, &cmd_len);
-            ctx.endir = (cmd_len >= 4 && memcmp(cmd, "IRPA", 4) == 0) ? 1 : 0;
+            if (!(cmd_len == 4 && memcmp(cmd, "IDLE", 4) == 0)) {
+                ESP_LOGE(TAG, "Unsupported %.5s %.*s (only IDLE supported)",
+                         stmt, (int)cmd_len, cmd);
+                err = ESP_ERR_NOT_SUPPORTED;
+            }
         } else if (cmd_len == 9 && memcmp(cmd, "FREQUENCY", 9) == 0) {
             /* FREQUENCY <hz> HZ; -- informational, we can't change TCK dynamically */
             ESP_LOGD(TAG, "SVF FREQUENCY: %s", s);
