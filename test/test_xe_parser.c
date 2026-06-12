@@ -742,17 +742,16 @@ static void test_mux_constants(void)
 
 static void test_test_mode_bits(void)
 {
-    TEST(test_mode_register_bit_positions);
-    /* BOOT_FROM_JTAG + don't wait PLL */
-    uint32_t tm = XMOS_TEST_MODE_BOOT_JTAG | XMOS_TEST_MODE_PLL_LOCK_N;
-    if (!(tm & (1u << 29))) { FAIL("BOOT_JTAG bit"); return; }
-    if (!(tm & (1u << 30))) { FAIL("PLL_LOCK_N bit"); return; }
-    if (tm & (1u << 31)) { FAIL("RESET_N should be 0"); return; }
-    if (tm & (1u << 28)) { FAIL("PLL_BYPASS should be 0"); return; }
+    TEST(test_mode_register_format);
+    /* sc_jtag shifts (0xFACED00 << 4) | mode into SET_TEST_MODE */
+    if ((XMOS_TEST_MODE_KEY | XMOS_TEST_MODE_OTP_SERIAL_EN) !=
+        ((0xFACED00u << 4) | 0x4u)) { FAIL("test mode key format"); return; }
 
-    /* With RESET_N set */
-    uint32_t tm2 = tm | XMOS_TEST_MODE_RESET_N;
-    if (!(tm2 & (1u << 31))) { FAIL("RESET_N not set"); return; }
+    /* PS resource IDs are (ps_num << 8) | 0x0b (xs3a_registers.h):
+     * XS1_PS_DBG_SSR=0x100b, SPC=0x110b, SSP=0x120b */
+    if (XMOS_PS_DBG_SSR != 0x100b) { FAIL("SSR resource id"); return; }
+    if (XMOS_PS_DBG_SPC != 0x110b) { FAIL("SPC resource id"); return; }
+    if (XMOS_PS_DBG_SSP != 0x120b) { FAIL("SSP resource id"); return; }
     PASS();
 }
 
@@ -1050,12 +1049,13 @@ static void test_xe_sector_constants(void)
 
 static void test_ps_register_numbers(void)
 {
-    TEST(ps_register_numbers_from_datasheet);
-    if (XMOS_PS_DBG_SSR != 0x10) { FAIL("SSR"); return; }
-    if (XMOS_PS_DBG_SPC != 0x11) { FAIL("SPC"); return; }
-    if (XMOS_PS_DBG_SSP != 0x12) { FAIL("SSP"); return; }
-    if (XMOS_PS_DBG_INT_TYPE != 0x15) { FAIL("INT_TYPE"); return; }
-    if (XMOS_PS_DBG_CORE_CTRL != 0x18) { FAIL("CORE_CTRL"); return; }
+    TEST(ps_resource_ids_match_xs3a_registers_h);
+    /* GETPS/SETPS take encoded resource IDs: (ps_num << 8) | 0x0b */
+    if (XMOS_PS_DBG_SSR != 0x100b) { FAIL("SSR"); return; }
+    if (XMOS_PS_DBG_SPC != 0x110b) { FAIL("SPC"); return; }
+    if (XMOS_PS_DBG_SSP != 0x120b) { FAIL("SSP"); return; }
+    if (XMOS_PS_DBG_INT_TYPE != 0x150b) { FAIL("INT_TYPE"); return; }
+    if (XMOS_PS_DBG_CORE_CTRL != 0x180b) { FAIL("CORE_CTRL"); return; }
     PASS();
 }
 
@@ -1190,6 +1190,7 @@ int main(int argc, char **argv)
     test_mux_constants();
     test_test_mode_bits();
     test_dbg_int_bits();
+    test_idcode_mask();
     test_pswitch_scratch_layout();
     test_debug_cmd_ordering();
     test_xe_sector_constants();

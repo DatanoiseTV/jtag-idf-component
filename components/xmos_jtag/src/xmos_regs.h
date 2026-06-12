@@ -12,15 +12,33 @@
 #include <stdint.h>
 
 /* =========================================================================
- * Top-level JTAG TAP (boundary scan TAP) -- 4-bit IR
+ * Top-level TAPs.
+ *
+ * Even with the MUX closed, an XMOS device exposes TWO TAPs in the chain
+ * (sc_jtag jtag_chip_tap_reg_access scans an 8-bit IR / 33-bit DR):
+ *
+ *   TDI -> BSCAN TAP (4-bit IR) -> CHIP TAP (4-bit IR) -> TDO
+ *
+ * SETMUX / SET_TEST_MODE are CHIP TAP instructions (sc_jtag jtag.xc).
+ * The boundary-scan instructions (EXTEST/SAMPLE) live on the BSCAN TAP;
+ * their opcodes below are NOT confirmed by any public source (no XMOS
+ * BSDL is published) -- treat as best-effort.
  * ======================================================================= */
 #define XMOS_BSCAN_IR_LEN            4
-#define XMOS_BSCAN_IR_EXTEST         0x0   /* Drive pins from BSR */
-#define XMOS_BSCAN_IR_IDCODE         0x1
-#define XMOS_BSCAN_IR_SAMPLE         0x2   /* Capture pin states (non-destructive) */
-#define XMOS_BSCAN_IR_SETMUX         0x4
-#define XMOS_BSCAN_IR_SET_TEST_MODE  0x8
+#define XMOS_BSCAN_IR_EXTEST         0x0   /* UNVERIFIED (no public BSDL) */
+#define XMOS_BSCAN_IR_SAMPLE         0x2   /* UNVERIFIED (no public BSDL) */
 #define XMOS_BSCAN_IR_BYPASS         0xF
+
+#define XMOS_CHIP_TAP_IR_DEVICE_ID   0x3   /* sc_jtag jtag_read_idcode (0xfff3) */
+#define XMOS_CHIP_TAP_IR_SETMUX      0x4   /* sc_jtag SETMUX_IR */
+#define XMOS_CHIP_TAP_IR_GETMUX      0x5   /* sc_jtag GETMUX_IR */
+#define XMOS_CHIP_TAP_IR_SET_TEST_MODE 0x8 /* sc_jtag SET_TEST_MODE_IR */
+
+/* Closed-chain (MUX_NC) scan geometry, per sc_jtag:
+ *   IR = CHIP(4, bits[3:0], nearest TDO) + BSCAN(4, bits[7:4]) = 8 bits
+ *   DR = CHIP DR(32) + BSCAN bypass(1) = 33 bits, data in low 32 */
+#define XMOS_CLOSED_IR_LEN           8
+#define XMOS_CLOSED_DR_LEN           33
 
 /* =========================================================================
  * Chip TAP MUX target values (shifted into DR after SETMUX IR)
@@ -41,22 +59,26 @@ static inline uint32_t xmos_tile_to_mux(int tile)
 }
 
 /* =========================================================================
- * SET_TEST_MODE register bits (32-bit DR after SET_TEST_MODE IR)
+ * SET_TEST_MODE register (32-bit chip TAP DR)
+ *
+ * Per sc_jtag, the upper 28 bits carry a magic key (0xFACED00 << 4) and
+ * the low nibble is the mode (e.g. 0x4 = OTP serial enable).  The
+ * formerly-defined "BOOT_JTAG"/"RESET_N" bit positions had no public
+ * source and collided with the key, so they were removed.
  * ======================================================================= */
-#define XMOS_TEST_MODE_RESET_N       (1u << 31)  /* 1 = do NOT reset */
-#define XMOS_TEST_MODE_PLL_LOCK_N    (1u << 30)  /* 1 = don't wait PLL */
-#define XMOS_TEST_MODE_BOOT_JTAG     (1u << 29)  /* 1 = boot from JTAG */
-#define XMOS_TEST_MODE_PLL_BYPASS    (1u << 28)  /* 1 = bypass PLL */
+#define XMOS_TEST_MODE_KEY           (0xFACED00u << 4)
+#define XMOS_TEST_MODE_OTP_SERIAL_EN 0x4
 
 /* =========================================================================
- * Internal TAP chain lengths (when MUX is open to an xCORE)
+ * Internal TAP chain lengths (when MUX is open)
  *
- * Chain order (TDI first): OTP -> XCORE -> CHIP -> BSCAN
- * Total IR when mux open: 2 + 10 + 4 + 4 = 20 bits
- *
- * When scanning IR, bits go:
- *   [OTP 2b][XCORE 10b][CHIP 4b][BSCAN 4b]
- * LSB-first means we shift OTP bits first, BSCAN bits last.
+ * Physical order: TDI -> BSCAN -> CHIP -> XCORE -> OTP -> TDO.
+ * With LSB-first shifting the first bit shifted ends up in the TAP
+ * nearest TDO, so the IR word layout is:
+ *   bits [1:0]   OTP, [11:2] XCORE, [15:12] CHIP, [19:16] BSCAN
+ * Total IR when mux open: 2 + 10 + 4 + 4 = 20 bits.
+ * (sc_jtag scans this as 22 bits with 2 leading don't-care bits that
+ *  flush straight through -- equivalent to a 20-bit scan.)
  * ======================================================================= */
 #define XMOS_CHIP_TAP_IR_LEN         4
 #define XMOS_XCORE_TAP_IR_LEN        10
@@ -79,16 +101,15 @@ static inline uint32_t xmos_tile_to_mux(int tile)
 #define XMOS_REG_OP_READ    1
 #define XMOS_REG_OP_WRITE   2
 
-/* DR length for register access:
- *   SSWITCH: 32 bits
- *   xCORE:   33 bits (data << 1, with status bit at LSB on read) */
-#define XMOS_SSWITCH_DR_LEN          32
-#define XMOS_XCORE_DR_LEN            33
+/* DR scan for register access, exactly as sc_jtag jtag_module_reg_access:
+ *   - always scan 35 bits
+ *   - shift in (data << 1)
+ *   - readback: SSWITCH value = dr_out[31:0]
+ *               xCORE   value = (dr_out >> 1)[31:0]   */
+#define XMOS_REG_DR_LEN              35
 
-/* Total DR through the chain when mux is open:
- *   OTP bypass(1) + xCORE DR + CHIP bypass(1) + BSCAN bypass(1)
- *   = 1 + 33 + 1 + 1 = 36 bits for xCORE access
- *   = 1 + 32 + 1 + 1 = 35 bits for SSWITCH access */
+/* Total bypass bits with mux open (sc_jtag MUX_XCORE_BYP_LEN) */
+#define XMOS_MUX_TOTAL_BYP_LEN       4
 
 /* =========================================================================
  * Construct the full-chain IR word for a register access
@@ -163,18 +184,23 @@ static inline uint32_t xmos_chain_ir_reg_write(uint8_t reg)
 #define XMOS_SSWITCH_REF_CLK_DIV     0x08
 
 /* =========================================================================
- * Processor State (PS) register numbers
- * Accessed via debug GETPS/SETPS commands
+ * Processor State (PS) resource identifiers
+ *
+ * GETPS/SETPS take a fully-encoded resource ID in ARG0, not a bare
+ * register number: (ps_number << 8) | 0x0b (resource type PS).
+ * Values match xs3a_registers.h (XS1_PS_DBG_SSR=0x100b, SPC=0x110b,
+ * SSP=0x120b); sc_jtag dbg_access.xc composes the ID the same way.
  * ======================================================================= */
-#define XMOS_PS_RAM_BASE             0x00
-#define XMOS_PS_VECTOR_BASE          0x01
-#define XMOS_PS_BOOT_STATUS          0x03
-#define XMOS_PS_RAM_SIZE             0x0C
-#define XMOS_PS_DBG_SSR              0x10   /* Saved status register */
-#define XMOS_PS_DBG_SPC              0x11   /* Saved program counter */
-#define XMOS_PS_DBG_SSP              0x12   /* Saved stack pointer */
-#define XMOS_PS_DBG_INT_TYPE         0x15
-#define XMOS_PS_DBG_CORE_CTRL        0x18
+#define XMOS_PS_RES_ID(n)            (((uint32_t)(n) << 8) | 0x0b)
+#define XMOS_PS_RAM_BASE             XMOS_PS_RES_ID(0x00)
+#define XMOS_PS_VECTOR_BASE          XMOS_PS_RES_ID(0x01)
+#define XMOS_PS_BOOT_STATUS          XMOS_PS_RES_ID(0x03)
+#define XMOS_PS_RAM_SIZE             XMOS_PS_RES_ID(0x0C)
+#define XMOS_PS_DBG_SSR              XMOS_PS_RES_ID(0x10)  /* Saved status register */
+#define XMOS_PS_DBG_SPC              XMOS_PS_RES_ID(0x11)  /* Saved program counter */
+#define XMOS_PS_DBG_SSP              XMOS_PS_RES_ID(0x12)  /* Saved stack pointer */
+#define XMOS_PS_DBG_INT_TYPE         XMOS_PS_RES_ID(0x15)
+#define XMOS_PS_DBG_CORE_CTRL        XMOS_PS_RES_ID(0x18)
 
 /* =========================================================================
  * Debug commands (written to PSWITCH_DBG_COMMAND)
@@ -199,7 +225,9 @@ static inline uint32_t xmos_chain_ir_reg_write(uint8_t reg)
 /* =========================================================================
  * Known JTAG IDCODE values
  * ======================================================================= */
-#define XMOS_IDCODE_MASK             0x0FFFFFFF  /* Ignore revision nibble */
+/* XMOS tools (tool_axe getTypeFromJtagID) compare the low 16-bit device
+ * code only; upper IDCODE bits carry revision/variant information. */
+#define XMOS_IDCODE_MASK             0x0000FFFF
 #define XMOS_IDCODE_XS1_G4           0x00104731u
 #define XMOS_IDCODE_XS1_G1           0x00002633u
 #define XMOS_IDCODE_XS1_SU           0x00003633u

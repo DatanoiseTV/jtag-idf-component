@@ -71,11 +71,49 @@ static esp_err_t shift_dr_val(xmos_jtag_handle_t h, uint64_t val,
 }
 
 /* =========================================================================
- * MUX management
+ * Chip TAP access and MUX management
  *
- * Opening the MUX adds the internal TAPs (OTP, XCORE, CHIP) to the
- * scan chain.  Closing it (MUX_NC) removes them.
+ * Opening the MUX adds the internal TAPs (OTP, XCORE) to the scan chain.
+ * Closing it (MUX_NC) removes them.  SETMUX / SET_TEST_MODE are CHIP TAP
+ * instructions; the framing below replicates XMOS sc_jtag
+ * jtag_chip_tap_reg_access() exactly.
  * ======================================================================= */
+
+/**
+ * Execute a chip TAP instruction with a 32-bit DR value.
+ */
+static esp_err_t chip_tap_access(xmos_jtag_handle_t h,
+                                 uint32_t command, uint32_t data)
+{
+    esp_err_t err;
+
+    if (h->mux_open) {
+        /* Open chain: OTP byp + XCORE byp + CHIP = command + BSCAN byp.
+         * DR = OTP byp(1) + XCORE byp(1) + CHIP DR(32) + BSCAN byp(1)
+         *    = 35 bits, data skips the two TDO-side bypass bits. */
+        uint32_t ir = (uint32_t)XMOS_OTP_TAP_BYPASS
+                    | ((uint32_t)0x3FF << 2)
+                    | (command << 12)
+                    | ((uint32_t)XMOS_BSCAN_IR_BYPASS << 16);
+        err = shift_ir_val(h, ir, XMOS_MUX_TOTAL_IR_LEN);
+        if (err != ESP_OK) return err;
+
+        err = shift_dr_val(h, (uint64_t)data << 2, NULL, 35);
+        if (err != ESP_OK) return err;
+    } else {
+        /* Closed chain: CHIP = command (bits [3:0], nearest TDO),
+         * BSCAN bypass (bits [7:4]).  DR = CHIP DR(32) + BSCAN byp(1). */
+        uint32_t ir = command | ((uint32_t)XMOS_BSCAN_IR_BYPASS << 4);
+        err = shift_ir_val(h, ir, XMOS_CLOSED_IR_LEN);
+        if (err != ESP_OK) return err;
+
+        err = shift_dr_val(h, data, NULL, XMOS_CLOSED_DR_LEN);
+        if (err != ESP_OK) return err;
+    }
+
+    /* Return every TAP to BYPASS (sc_jtag does this after each access) */
+    return shift_ir_val(h, 0xFFFFFFFF, XMOS_MUX_TOTAL_IR_LEN);
+}
 
 /**
  * Select a MUX target.  After this call, if target != MUX_NC, the
@@ -83,42 +121,20 @@ static esp_err_t shift_dr_val(xmos_jtag_handle_t h, uint64_t val,
  */
 static esp_err_t mux_select(xmos_jtag_handle_t h, uint32_t target)
 {
-    /* SETMUX via the top-level (boundary scan) TAP */
-    esp_err_t err;
+    esp_err_t err = chip_tap_access(h, XMOS_CHIP_TAP_IR_SETMUX, target);
+    if (err != ESP_OK) return err;
 
-    if (!h->mux_open) {
-        /* MUX is closed -- chain is just the BSCAN TAP (4-bit IR) */
-        err = shift_ir_val(h, XMOS_BSCAN_IR_SETMUX, XMOS_BSCAN_IR_LEN);
-        if (err != ESP_OK) return err;
-
-        err = shift_dr_val(h, target, NULL, 4);
-        if (err != ESP_OK) return err;
-
-        if (target != XMOS_MUX_NC)
-            h->mux_open = true;
-    } else {
-        /* MUX already open -- chain has 20-bit IR.
-         * SETMUX is still on the BSCAN TAP, which is at the MSB end.
-         * Other TAPs get BYPASS. */
-        uint32_t ir = (uint32_t)XMOS_OTP_TAP_BYPASS
-                    | ((uint32_t)0x3FF << 2)            /* XCORE bypass (10 bits) */
-                    | ((uint32_t)XMOS_CHIP_TAP_BYPASS << 12)
-                    | ((uint32_t)XMOS_BSCAN_IR_SETMUX << 16);
-        err = shift_ir_val(h, ir, XMOS_MUX_TOTAL_IR_LEN);
-        if (err != ESP_OK) return err;
-
-        /* DR: bypass bits from OTP(1), XCORE(1), CHIP(1) + MUX value.
-         * The MUX value goes into the BSCAN DR (4 bits).
-         * Total DR = 1 + 1 + 1 + 4 = 7 bits */
-        uint64_t dr = (uint64_t)target << 3;  /* 3 bypass bits, then target */
-        err = shift_dr_val(h, dr, NULL, 7);
-        if (err != ESP_OK) return err;
-
-        if (target == XMOS_MUX_NC)
-            h->mux_open = false;
-    }
-
+    h->mux_open = (target != XMOS_MUX_NC);
     h->mux_state = (int)target;
+
+    /* Post-SETMUX flush: bypass IR scan + short DR scan.  sc_jtag carries
+     * this workaround ("TODO -- Find out why this work around is
+     * required!!!") after every MUX change -- keep it, it is part of the
+     * known-good sequence. */
+    err = shift_ir_val(h, 0xFFFFFFFF, XMOS_MUX_TOTAL_IR_LEN);
+    if (err != ESP_OK) return err;
+    err = shift_dr_val(h, 0xF, NULL, XMOS_MUX_TOTAL_BYP_LEN);
+    if (err != ESP_OK) return err;
 
     /* Allow the MUX to settle */
     h->transport->idle(h->transport, 4);
@@ -167,32 +183,17 @@ static esp_err_t reg_access(xmos_jtag_handle_t h, int tile, uint8_t reg,
     esp_err_t err = shift_ir_val(h, chain_ir, XMOS_MUX_TOTAL_IR_LEN);
     if (err != ESP_OK) return err;
 
-    /* DR scan */
-    if (is_sswitch) {
-        /* SSWITCH: 32-bit DR, + 3 bypass bits = 35 total */
-        uint64_t dr_in = (uint64_t)wr_val << 1;  /* 1 bypass bit (OTP), then data */
-        /* Actually: OTP bypass(1 bit at LSB) + SSWITCH DR(32 bits) + CHIP bypass(1) + BSCAN bypass(1) */
-        dr_in = ((uint64_t)wr_val << 1);  /* OTP bypass absorbs 1 bit */
-        uint64_t dr_out = 0;
-        err = shift_dr_val(h, dr_in, rd_val ? &dr_out : NULL, 35);
-        if (err != ESP_OK) return err;
+    /* DR scan -- framing per sc_jtag jtag_module_reg_access/jtag_read_reg:
+     * always 35 bits, shift in (data << 1); readback is the raw stream
+     * for the system switch and (stream >> 1) for an xCORE tile. */
+    uint64_t dr_out = 0;
+    err = shift_dr_val(h, (uint64_t)wr_val << 1,
+                       rd_val ? &dr_out : NULL, XMOS_REG_DR_LEN);
+    if (err != ESP_OK) return err;
 
-        if (rd_val) {
-            /* Extract 32-bit value after OTP bypass bit */
-            *rd_val = (uint32_t)(dr_out >> 1) & 0xFFFFFFFF;
-        }
-    } else {
-        /* xCORE: 33-bit DR (data<<1 + status), + 3 bypass = 36 total */
-        uint64_t dr_in = (uint64_t)(wr_val) << 2;  /* OTP bypass(1) + xCORE shift(1) */
-        uint64_t dr_out = 0;
-        err = shift_dr_val(h, dr_in, rd_val ? &dr_out : NULL, 36);
-        if (err != ESP_OK) return err;
-
-        if (rd_val) {
-            /* Skip OTP bypass bit, then xCORE DR is: (value << 1) | status */
-            uint64_t xcore_dr = (dr_out >> 1) & 0x1FFFFFFFF;
-            *rd_val = (uint32_t)(xcore_dr >> 1);
-        }
+    if (rd_val) {
+        *rd_val = is_sswitch ? (uint32_t)dr_out
+                             : (uint32_t)(dr_out >> 1);
     }
 
     return ESP_OK;
@@ -294,12 +295,13 @@ static esp_err_t dbg_mem_write_quad(xmos_jtag_handle_t h, int tile,
                       XMOS_DBG_CMD_WRITE4PI, NULL, true);
 }
 
-/** Set a processor state register via SETPS debug command. */
+/** Set a processor state register via SETPS debug command.
+ *  ps_res is the ENCODED resource ID (XMOS_PS_*), not a bare number. */
 static esp_err_t dbg_setps(xmos_jtag_handle_t h, int tile,
-                           uint8_t ps_reg, uint32_t value)
+                           uint32_t ps_res, uint32_t value)
 {
     esp_err_t err;
-    err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0, ps_reg, NULL, true);
+    err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0, ps_res, NULL, true);
     if (err != ESP_OK) return err;
     err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG2, value, NULL, true);
     if (err != ESP_OK) return err;
@@ -309,10 +311,10 @@ static esp_err_t dbg_setps(xmos_jtag_handle_t h, int tile,
 
 /** Read a processor state register via GETPS debug command. */
 static esp_err_t dbg_getps(xmos_jtag_handle_t h, int tile,
-                           uint8_t ps_reg, uint32_t *value)
+                           uint32_t ps_res, uint32_t *value)
 {
     esp_err_t err;
-    err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0, ps_reg, NULL, true);
+    err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0, ps_res, NULL, true);
     if (err != ESP_OK) return err;
     err = reg_access(h, tile, XMOS_PSWITCH_DBG_COMMAND,
                      XMOS_DBG_CMD_GETPS, NULL, true);
@@ -361,6 +363,12 @@ void xmos_jtag_deinit(xmos_jtag_handle_t handle)
     free(handle);
 }
 
+/* Used by the SVF player to drive raw scans through the same transport. */
+jtag_transport_t *xmos_jtag_get_transport(xmos_jtag_handle_t handle)
+{
+    return handle ? handle->transport : NULL;
+}
+
 /* =========================================================================
  * Known JTAG manufacturer/part database (for chain display)
  * ======================================================================= */
@@ -373,25 +381,22 @@ typedef struct {
 } jtag_known_device_t;
 
 static const jtag_known_device_t s_known_devices[] = {
-    /* XMOS */
-    { 0x0FFFFFFF, 0x00005633, "XMOS xCORE-200 (XU21x)", 4 },
-    { 0x0FFFFFFF, 0x00006633, "XMOS xCORE.ai (XU316)",  4 },
-    { 0x0FFFFFFF, 0x00002633, "XMOS XS1-G1",            4 },
+    /* XMOS -- device codes from sc_jtag jtag.h / tool_axe ProcessorNode */
+    { 0x0000FFFF, 0x00005633, "XMOS xCORE-200 (XS2)",   4 },
+    { 0x0000FFFF, 0x00006633, "XMOS xCORE.ai (XS3)",    4 },  /* unverified */
+    { 0x0000FFFF, 0x00002633, "XMOS XS1-L",             4 },
     { 0x0FFFFFFF, 0x00104731, "XMOS XS1-G4",            4 },
-    { 0x0FFFFFFF, 0x00003633, "XMOS XS1-SU",            4 },
-    /* Lattice */
-    { 0x0FFFFFFF, 0x0012B043, "Lattice iCE40UP5K",      8 },
-    { 0x0FFFFFFF, 0x0021111B, "Lattice ECP5-25",        8 },
-    { 0x0FFFFFFF, 0x0041111B, "Lattice ECP5-45",        8 },
-    { 0x0FFFFFFF, 0x0081111B, "Lattice ECP5-85",        8 },
-    /* Xilinx / AMD */
-    { 0x0FFFFFFF, 0x03631093, "Xilinx XC7A35T",         6 },
-    { 0x0FFFFFFF, 0x03636093, "Xilinx XC7A100T",        6 },
-    { 0x0FFFFFFF, 0x13631093, "Xilinx XC7A35T",         6 },
-    /* Espressif (JTAG debug) */
-    { 0x0FFF0FFF, 0x0000120F, "Espressif ESP32",        5 },
-    { 0x0FFF0FFF, 0x0000220F, "Espressif ESP32-S2",     5 },
-    { 0x0FFF0FFF, 0x0000320F, "Espressif ESP32-S3",     5 },
+    { 0x0000FFFF, 0x00003633, "XMOS XS1-SU",            4 },
+    /* Lattice ECP5 -- IDCODEs from openFPGALoader part.hpp.
+     * (iCE40 has no JTAG TAP; it can never appear in a chain.) */
+    { 0xFFFFFFFF, 0x41111043, "Lattice ECP5 LFE5U-25",  8 },
+    { 0xFFFFFFFF, 0x41112043, "Lattice ECP5 LFE5U-45",  8 },
+    { 0xFFFFFFFF, 0x41113043, "Lattice ECP5 LFE5U-85",  8 },
+    /* Xilinx / AMD -- openFPGALoader part.hpp */
+    { 0x0FFFFFFF, 0x0362D093, "Xilinx XC7A35T",         6 },
+    { 0x0FFFFFFF, 0x03631093, "Xilinx XC7A100T",        6 },
+    /* Espressif -- OpenOCD tcl/target/esp32*.cfg (ESP32/S3 share the ID) */
+    { 0x0FFFFFFF, 0x020034E5, "Espressif ESP32/S3",     5 },
     /* ARM DAP */
     { 0x0F000FFF, 0x0B000477, "ARM CoreSight DAP",      4 },
     /* Sentinel */
@@ -407,20 +412,24 @@ static const jtag_known_device_t *lookup_device(uint32_t idcode)
     return NULL;
 }
 
-/* JEDEC JEP106 manufacturer lookup (common ones) */
+/*
+ * JEDEC JEP106 manufacturer lookup.  The key is IDCODE bits [11:1]
+ * ((bank << 7) | code), e.g. XMOS = bank 6, code 0x19 -> 0x319
+ * (openocd jep106.inc).  The others fall out of known IDCODEs:
+ * 0x...093 >> 1 -> 0x049 Xilinx, 0x...043 >> 1 -> 0x021 Lattice,
+ * 0x120034E5 >> 1 -> 0x272 Espressif, 0x...477 >> 1 -> 0x23B ARM.
+ */
 static const char *lookup_manufacturer(uint16_t mfg_id)
 {
     switch (mfg_id) {
-        case 0x049: return "XMOS";
-        case 0x093: return "Xilinx/AMD";
-        case 0x06E: return "Lattice";
-        case 0x00F: return "Espressif"; /* custom bank */
+        case 0x319: return "XMOS";
+        case 0x049: return "Xilinx/AMD";
+        case 0x021: return "Lattice";
+        case 0x272: return "Espressif";
         case 0x23B: return "ARM";
-        case 0x04F: return "Atmel/Microchip";
-        case 0x0E5: return "Intel/Altera";
-        case 0x01F: return "Atmel";
+        case 0x06E: return "Intel/Altera";
+        case 0x01F: return "Atmel/Microchip";
         case 0x020: return "ST";
-        case 0x04A: return "GigaDevice";
         default:    return NULL;
     }
 }
@@ -455,11 +464,15 @@ esp_err_t xmos_jtag_scan_chain(xmos_jtag_handle_t h, jtag_chain_t *chain)
      */
     size_t total_bits = JTAG_CHAIN_MAX_DEVICES * 32;
     size_t total_bytes = total_bits / 8;
-    uint8_t *tdi = calloc(1, total_bytes);
+    uint8_t *tdi = malloc(total_bytes);
     uint8_t *tdo = calloc(1, total_bytes);
     if (!tdi || !tdo) { free(tdi); free(tdo); return ESP_ERR_NO_MEM; }
 
-    /* Shift zeros in, capture IDCODEs out */
+    /* Shift ONES in, capture IDCODEs out.  Once the real chain content has
+     * passed through, the captured stream reads back our all-1s fill, which
+     * is what the 0xFFFFFFFF end-of-chain check below relies on (shifting
+     * zeros would read back as an endless run of fake BYPASS bits). */
+    memset(tdi, 0xFF, total_bytes);
     err = h->transport->shift_dr(h->transport, tdi, tdo, total_bits);
     free(tdi);
     if (err != ESP_OK) { free(tdo); return err; }
@@ -527,18 +540,19 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
 {
     esp_err_t err;
 
-    /* Reset TAP -- back to just the BSCAN TAP */
+    /* Reset TAP -- back to the closed chain (BSCAN + CHIP TAPs) */
     h->mux_open = false;
     h->mux_state = -1;
     err = h->transport->reset(h->transport);
     if (err != ESP_OK) return err;
 
-    /* Read IDCODE: IR=IDCODE, then scan 32-bit DR */
-    err = shift_ir_val(h, XMOS_BSCAN_IR_IDCODE, XMOS_BSCAN_IR_LEN);
-    if (err != ESP_OK) return err;
-
+    /* Read IDCODE straight from DR.  After Test-Logic-Reset every TAP
+     * with an IDCODE register selects it as the DR (IEEE 1149.1), so no
+     * IR load is needed -- and loading a wrong opcode here could select
+     * something destructive like EXTEST.  The chip TAP sits nearest TDO,
+     * so its IDCODE is the first 32 bits out. */
     uint64_t idcode_raw = 0;
-    err = shift_dr_val(h, 0, &idcode_raw, 32);
+    err = shift_dr_val(h, 0xFFFFFFFFu, &idcode_raw, 32);
     if (err != ESP_OK) return err;
 
     uint32_t idcode = (uint32_t)idcode_raw;
@@ -787,62 +801,41 @@ esp_err_t xmos_jtag_mem_read(xmos_jtag_handle_t h,
  * ======================================================================= */
 
 /**
- * Perform the JTAG boot sequence:
- *   1. Assert system reset (if pin available)
- *   2. Set JTAG boot mode via test mode register
- *   3. Release reset
- *   4. Wait for boot ROM to enter JTAG boot wait loop
+ * Reset the target ahead of a JTAG load:
+ *   1. Assert system reset (if the pin is wired)
+ *   2. Reset the TAP state machine
+ *   3. Release system reset and let the boot ROM start
+ *
+ * The tile is then halted via a debug interrupt (enter_debug) before its
+ * RAM is rewritten, so whatever the device tried to boot from does not
+ * matter.  A previous revision shifted a "SET_TEST_MODE / boot-from-JTAG"
+ * word here, but the bit layout had no public source and conflicted with
+ * the 0xFACED00 key XMOS itself shifts into that register -- removed.
  */
 static esp_err_t jtag_boot_sequence(xmos_jtag_handle_t h)
 {
     esp_err_t err;
 
-    /* Close MUX first, we need raw BSCAN access */
-    if (h->mux_open) {
-        mux_select(h, XMOS_MUX_NC);
+    /* Assert system reset if available */
+    if (h->pins.srst_n != GPIO_NUM_NC) {
+        gpio_set_level(h->pins.srst_n, 0);
+        esp_rom_delay_us(1000);
+    } else {
+        ESP_LOGW(TAG, "No SRST pin: target not reset, halting it as-is");
     }
 
-    /* Reset TAP */
+    /* Reset TAP -- also forgets any MUX state */
     err = h->transport->reset(h->transport);
     if (err != ESP_OK) return err;
     h->mux_open = false;
     h->mux_state = -1;
 
-    /* Assert system reset if available */
-    if (h->pins.srst_n != GPIO_NUM_NC) {
-        gpio_set_level(h->pins.srst_n, 0);
-        esp_rom_delay_us(1000);
-    }
-
-    /* Set test mode: BOOT_FROM_JTAG, don't wait for PLL lock */
-    uint32_t test_mode = XMOS_TEST_MODE_BOOT_JTAG
-                       | XMOS_TEST_MODE_PLL_LOCK_N;
-
-    err = shift_ir_val(h, XMOS_BSCAN_IR_SET_TEST_MODE, XMOS_BSCAN_IR_LEN);
-    if (err != ESP_OK) return err;
-    err = shift_dr_val(h, test_mode, NULL, 32);
-    if (err != ESP_OK) return err;
-
-    /* Release reset */
     if (h->pins.srst_n != GPIO_NUM_NC) {
         gpio_set_level(h->pins.srst_n, 1);
-    } else {
-        /* No SRST: write test mode with RESET_N=0 (causes reset), then with RESET_N=1 */
-        err = shift_ir_val(h, XMOS_BSCAN_IR_SET_TEST_MODE, XMOS_BSCAN_IR_LEN);
-        if (err != ESP_OK) return err;
-        err = shift_dr_val(h, test_mode, NULL, 32);  /* RESET_N=0 implicit */
-        if (err != ESP_OK) return err;
-
-        err = shift_ir_val(h, XMOS_BSCAN_IR_SET_TEST_MODE, XMOS_BSCAN_IR_LEN);
-        if (err != ESP_OK) return err;
-        err = shift_dr_val(h, test_mode | XMOS_TEST_MODE_RESET_N, NULL, 32);
-        if (err != ESP_OK) return err;
+        /* Give the boot ROM time to come up before halting it */
+        esp_rom_delay_us(50000);
     }
 
-    /* Wait for boot ROM to reach JTAG boot wait loop */
-    esp_rom_delay_us(50000);  /* 50ms -- conservative */
-
-    ESP_LOGI(TAG, "JTAG boot mode activated");
     return ESP_OK;
 }
 

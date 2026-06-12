@@ -221,8 +221,12 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t handle,
  * The image should be created with:
  *   xflash --factory <app.xe> -o image.bin
  *
- * @param stub      User-supplied stub binary, or NULL for built-in stub
- * @param stub_len  Length of stub (ignored if stub == NULL)
+ * There is no built-in stub: build one with the XMOS toolchain, or use
+ * xmos_spi_flash_program() for direct SPI access while the target is
+ * held in reset.
+ *
+ * @param stub      Flash-programmer stub binary (required)
+ * @param stub_len  Length of stub in bytes
  */
 esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t handle,
                                   const uint8_t *flash_image,
