@@ -13,6 +13,8 @@
  */
 
 #include <string.h>
+#include <strings.h>
+#include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -58,8 +60,11 @@ static const char *TAG = "xmos_web";
  *     SCK=23, MOSI=5, MISO=4, CS=20
  *     CRESET=21, CDONE=22
  *
- * Use a level shifter if the target needs 1.8V I/O (XMOS JTAG).
- * LDO_VO4 (right header row 1) provides 1.8V for the shifter.
+ * XMOS xCORE-200/xCORE.ai JTAG pins are on the 3.3V VDDIO rail (the
+ * 1.8V rails are core/PLL supplies only), so they connect to ESP32
+ * GPIOs directly -- no level shifter.  Only add one for targets whose
+ * JTAG bank really runs below 3.3V; LDO_VO4 (right header row 1) can
+ * supply 1.8V in that case.
  */
 #if CONFIG_IDF_TARGET_ESP32P4
 /* JTAG -- right header */
@@ -260,23 +265,29 @@ static esp_err_t handler_chain(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Build JSON array */
-    char *json = malloc(2048);
+    /* Build JSON array.  ~160 bytes per device worst case; size for the
+     * full chain so snprintf can never be asked to write past the end
+     * (its return value counts would-be bytes, so unchecked `pos +=`
+     * arithmetic on a too-small buffer walks out of bounds). */
+    size_t json_cap = 64 + JTAG_CHAIN_MAX_DEVICES * 160;
+    char *json = malloc(json_cap);
     if (!json) return ESP_FAIL;
-    int pos = snprintf(json, 2048, "{\"devices\":[");
+    size_t pos = snprintf(json, json_cap, "{\"devices\":[");
 
-    for (size_t i = 0; i < chain.num_devices; i++) {
+    for (size_t i = 0; i < chain.num_devices && pos < json_cap - 2; i++) {
         const jtag_chain_device_t *d = &chain.devices[i];
         if (i > 0) json[pos++] = ',';
-        pos += snprintf(json + pos, 2048 - pos,
+        int n = snprintf(json + pos, json_cap - pos,
             "{\"idcode\":\"0x%08lx\",\"name\":\"%s\","
             "\"manufacturer\":\"0x%03x\",\"part\":\"0x%04x\","
             "\"version\":%d,\"ir_len\":%d}",
             (unsigned long)d->idcode, d->name,
             d->manufacturer, d->part_number,
             d->version, d->ir_len);
+        if (n < 0 || (size_t)n >= json_cap - pos) break;
+        pos += n;
     }
-    pos += snprintf(json + pos, 2048 - pos, "]}");
+    pos += snprintf(json + pos, json_cap - pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, pos);
@@ -326,20 +337,55 @@ static esp_err_t handler_bscan(httpd_req_t *req)
     return ESP_OK;
 }
 
+/*
+ * SVF detection: real SVF files usually open with comment lines
+ * ("!" or "//") before the first command, so skip whitespace and
+ * comments, then match the first keyword.
+ */
+static bool looks_like_svf(const char *buf, size_t len)
+{
+    size_t i = 0;
+    while (i < len) {
+        if (isspace((unsigned char)buf[i])) { i++; continue; }
+        if (buf[i] == '!' ||
+            (buf[i] == '/' && i + 1 < len && buf[i + 1] == '/')) {
+            while (i < len && buf[i] != '\n') i++;
+            continue;
+        }
+        break;
+    }
+    if (len - i < 3) return false;
+
+    static const char *kw[] = { "HDR", "HIR", "SIR", "SDR", "TDR", "TIR",
+                                "TRS", "END", "STA", "FRE", "RUN", "PIO" };
+    for (size_t k = 0; k < sizeof(kw) / sizeof(kw[0]); k++) {
+        if (strncasecmp(buf + i, kw[k], 3) == 0)
+            return true;
+    }
+    return false;
+}
+
 static esp_err_t handler_upload(httpd_req_t *req)
 {
-    if (req->content_len > MAX_FIRMWARE_SIZE) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "File too large");
+    if (req->content_len > MAX_FIRMWARE_SIZE || req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad file size");
+        return ESP_FAIL;
+    }
+    /* The flash/SVF tasks read s_fw_buf -- don't replace it mid-run */
+    if (s_flash_progress >= 0 && s_flash_progress < 100) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Operation in progress");
         return ESP_FAIL;
     }
 
+    /* Allocate for THIS upload rather than the 8MB maximum: chips
+     * without PSRAM (e.g. plain ESP32-WROOM) can never satisfy an 8MB
+     * malloc, which would make every upload fail with OOM. */
+    free(s_fw_buf);
+    s_fw_buf = heap_caps_malloc(req->content_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_fw_buf) s_fw_buf = malloc(req->content_len);
     if (!s_fw_buf) {
-        s_fw_buf = heap_caps_malloc(MAX_FIRMWARE_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_fw_buf) s_fw_buf = malloc(MAX_FIRMWARE_SIZE);
-        if (!s_fw_buf) {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-            return ESP_FAIL;
-        }
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
     }
 
     s_fw_len = 0;
@@ -374,11 +420,7 @@ static esp_err_t handler_upload(httpd_req_t *req)
             entry0 = parsed.entry_points[0];
             for (size_t i = 0; i < parsed.num_segments; i++) code_size += parsed.segments[i].filesz;
         }
-    } else if (s_fw_len >= 3 && (memcmp(s_fw_buf, "HDR", 3) == 0 ||
-               memcmp(s_fw_buf, "SIR", 3) == 0 || memcmp(s_fw_buf, "SDR", 3) == 0 ||
-               memcmp(s_fw_buf, "TRS", 3) == 0 || memcmp(s_fw_buf, "END", 3) == 0 ||
-               memcmp(s_fw_buf, "STA", 3) == 0 || memcmp(s_fw_buf, "FRE", 3) == 0 ||
-               memcmp(s_fw_buf, "RUN", 3) == 0 || s_fw_buf[0] == '!')) {
+    } else if (looks_like_svf((const char *)s_fw_buf, s_fw_len)) {
         ftype = "svf";
         code_size = s_fw_len;
     } else {

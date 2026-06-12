@@ -28,7 +28,7 @@ A general-purpose JTAG programmer component for ESP-IDF. Scan chains, program FP
 
 | Family | Chips | IDCODE | Tiles |
 |---|---|---|---|
-| **xCORE.ai** (XS3) | XU316 | `0x00006633` | 2 |
+| **xCORE.ai** (XS3) | XU316 | `0x00006633` *(unverified)* | 2 |
 | **xCORE-200** (XS2) | XU208, XU216 | `0x00005633` | 1--2 |
 | **XS1** (legacy) | XS1-G1, G4, SU | `0x00002633` `0x00104731` `0x00003633` | 1--4 |
 
@@ -48,7 +48,7 @@ The chain scanner recognises **Lattice ECP5/iCE40**, **Xilinx 7-Series**, **Espr
 | Xilinx 7-Series | JTAG (SVF) | *via SVF player* |
 | Any JTAG device | SVF file playback | *planned* |
 
-> **1.8 V I/O** -- XMOS JTAG signals are 1.8 V. Most FPGAs support configurable I/O banks. Use a level shifter between the ESP32 (3.3 V) and 1.8 V targets. On the ESP32-P4-NANO the `LDO_VO4` header pin supplies 1.8 V for the shifter's low-voltage rail.
+> **I/O voltage** -- XMOS xCORE-200/xCORE.ai JTAG pins sit on the 3.3 V `VDDIO` rail (the 1.8 V rails are core/PLL supplies only), so they connect to ESP32 GPIOs directly. Only targets whose JTAG bank actually runs below 3.3 V (check the datasheet's I/O bank supply) need a level shifter; on the ESP32-P4-NANO the `LDO_VO4` header pin can supply 1.8 V for the shifter's low-voltage rail in that case.
 
 ---
 
@@ -295,7 +295,7 @@ JTAG and SPI use separate headers so both can be wired simultaneously.
 | ICE40_CRESET | 21 | Row 8 outer |
 | ICE40_CDONE | 22 | Row 8 inner |
 
-Ethernet (IP101GRI over RMII) handles networking on internal GPIOs. The **LDO_VO4** pin (Right Row 1, outer) provides **1.8 V** for a JTAG level shifter if the target uses 1.8 V I/O.
+Ethernet (IP101GRI over RMII) handles networking on internal GPIOs. The **LDO_VO4** pin (Right Row 1, outer) can provide **1.8 V** for a JTAG level shifter in the rare case the target's JTAG bank runs at 1.8 V (XMOS parts do not -- their JTAG is on 3.3 V VDDIO).
 
 ---
 
