@@ -81,8 +81,30 @@ static const char *TAG = "xmos_web";
 #define PIN_SPI_CS          GPIO_NUM_20   /* L-Row 7 outer */
 #define PIN_ICE40_CRESET    GPIO_NUM_21   /* L-Row 8 outer */
 #define PIN_ICE40_CDONE     GPIO_NUM_22   /* L-Row 8 inner */
+#elif CONFIG_IDF_TARGET_ESP32
+/*
+ * Classic ESP32 (e.g. ESP32-WROOM-32).
+ *
+ * AVOID the S3 default pins here: GPIO6-11 are the module's SPI flash
+ * (driving them crashes the chip) and GPIO12 is a boot strapping pin.
+ * These defaults dodge all of those, the flash pins, and the input-only
+ * range (34-39 can't drive outputs).  TDI/TMS on 16/17 are free on
+ * WROOM; on WROVER those carry PSRAM, so move them if PSRAM is enabled.
+ */
+#define PIN_TCK             GPIO_NUM_23
+#define PIN_TMS             GPIO_NUM_17
+#define PIN_TDI             GPIO_NUM_16
+#define PIN_TDO             GPIO_NUM_18   /* input from target */
+#define PIN_TRST            GPIO_NUM_4
+#define PIN_SRST            GPIO_NUM_19
+#define PIN_SPI_CLK         GPIO_NUM_14
+#define PIN_SPI_MOSI        GPIO_NUM_13
+#define PIN_SPI_MISO        GPIO_NUM_27
+#define PIN_SPI_CS          GPIO_NUM_26
+#define PIN_ICE40_CRESET    GPIO_NUM_25
+#define PIN_ICE40_CDONE     GPIO_NUM_33
 #else
-/* ESP32-S3 defaults */
+/* ESP32-S3 / C3 / others: GPIO11-14 are free on these parts */
 #define PIN_TCK             GPIO_NUM_12
 #define PIN_TMS             GPIO_NUM_13
 #define PIN_TDI             GPIO_NUM_14

@@ -232,14 +232,20 @@ A ready-to-flash example with a browser UI lives in `example/`.
 ```sh
 cd example
 
+# Classic ESP32 (WROOM-32) -- WiFi AP
+idf.py set-target esp32 && idf.py build flash monitor
+# Connect to "XMOS-Flasher" (pw: xmosjtag), open http://192.168.4.1
+
 # ESP32-S3 -- WiFi AP
 idf.py set-target esp32s3 && idf.py build flash monitor
-# Connect to "XMOS-Flasher" (pw: xmosjtag), open http://192.168.4.1
 
 # ESP32-P4-NANO -- Ethernet (IP101GRI)
 idf.py set-target esp32p4 && idf.py build flash monitor
 # Plug in Ethernet, check serial log for DHCP address
 ```
+
+Pin assignments are per target in [`example/main/main.c`](example/main/main.c)
+(the `PIN_*` defines). Edit them there to match your wiring.
 
 **What the UI does:**
 
@@ -266,6 +272,21 @@ GPIO  (TRST)  ──>  TRST_N      (active low, optional)
 GPIO  (SRST)  ──>  RST_N       (open-drain, optional)
 GND           ──>  GND
 ```
+
+### Classic ESP32 (WROOM-32) -- default pins
+
+| Signal | GPIO | Notes |
+|---|---|---|
+| TCK | 23 | |
+| TMS | 17 | WROVER uses 16/17 for PSRAM -- move if PSRAM is on |
+| TDI | 16 | |
+| TDO | 18 | input from target |
+| TRST | 4 | optional, but tie high if your header exposes it |
+| SRST | 19 | optional |
+
+> Don't use GPIO6-11 (module SPI flash -- driving them crashes the chip)
+> or GPIO12 (boot strapping pin) for JTAG on the classic ESP32. The
+> defaults above avoid both.
 
 ### Waveshare ESP32-P4-NANO
 
