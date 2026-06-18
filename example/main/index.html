@@ -178,7 +178,10 @@
   <div class="card">
     <div class="card-hdr"><h2>Firmware</h2></div>
     <div class="drop" id="dropzone">
-      <input type="file" id="fileInput" accept=".xe,.bin,.elf,.svf">
+      <!-- No accept filter: some OS file pickers grey out unregistered
+           extensions like .xe.  The server classifies by content, so allow
+           any file rather than block the one the user needs. -->
+      <input type="file" id="fileInput">
       <div class="label">Drop firmware file</div>
       <div class="hint">.xe .bin .elf .svf</div>
     </div>
