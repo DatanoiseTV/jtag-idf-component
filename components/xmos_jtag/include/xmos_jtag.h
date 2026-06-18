@@ -213,19 +213,20 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t handle,
  * ---------------------------------------------------------------------- */
 
 /**
- * Program the XMOS SPI flash with a pre-formatted boot image.
+ * Program the XMOS SPI flash with a pre-formatted boot image, the way
+ * xflash does: load a flash-programmer stub into xCORE RAM, run it, and
+ * stream the image to it via the debug scratch mailbox.
  *
- * Uploads a flash-programmer stub to xCORE RAM, runs it, then streams
- * flash data via the JTAG debug mailbox.
- *
- * The image should be created with:
+ * The image must be a complete boot image, created with:
  *   xflash --factory <app.xe> -o image.bin
  *
- * There is no built-in stub: build one with the XMOS toolchain, or use
- * xmos_spi_flash_program() for direct SPI access while the target is
- * held in reset.
+ * There is no built-in stub (building xCORE code needs the XMOS toolchain).
+ * A reference stub and the exact host/stub protocol live in flash_stub/;
+ * compile it with xcc and pass it here.  Without a stub this returns
+ * ESP_ERR_NOT_SUPPORTED -- use xmos_spi_flash_program() for direct SPI
+ * access instead (ESP32 wired to the flash, target held in reset).
  *
- * @param stub      Flash-programmer stub binary (required)
+ * @param stub      Flash-programmer stub as an .xe image (required)
  * @param stub_len  Length of stub in bytes
  */
 esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t handle,

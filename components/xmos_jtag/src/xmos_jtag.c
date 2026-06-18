@@ -1043,26 +1043,39 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
  * Protocol between ESP32 and the stub running on xCORE:
  *   1. ESP32 loads stub to RAM and runs it
  *   2. Stub initialises SPI flash and signals ready via scratch[0]
- *   3. ESP32 writes flash data in chunks via scratch registers:
- *        scratch[2] = flash offset
- *        scratch[3] = chunk size (bytes, max 256)
- *        scratch[4..7] = data (up to 16 bytes per batch)
- *        scratch[1] = command (1 = write chunk, 2 = erase sector, 0xFF = done)
- *   4. Stub processes command, writes status to scratch[0]
- *   5. Repeat until done
+ *   3. ESP32 streams flash data: for each chunk it writes the bytes into a
+ *      fixed RAM buffer (ram_base + STUB_DATA_BUF_OFFSET) via the debug
+ *      memory interface, then posts a command through the scratch mailbox:
+ *        DBG_ARG0 (scratch[2]) = flash address (erase sector / write offset)
+ *        DBG_ARG1 (scratch[3]) = byte count (for WRITE)
+ *        DBG_COMMAND (scratch[1]) = WRITE / ERASE / DONE
+ *   4. Stub processes the command and writes status to DBG_STATUS (scratch[0])
+ *   5. Repeat until done.
+ *
+ * Handshake (race-free): the host halts the core, clears STATUS to BUSY,
+ * sets the args + command, then resumes.  The stub, when it sees a command,
+ * performs the op, sets STATUS = OK (or >= ERROR), and clears COMMAND.  The
+ * host polls STATUS.  Clearing STATUS while the core is halted guarantees a
+ * stale OK from the previous command is never mistaken for this one.
+ *
+ * The exact stub contract and a reference implementation live in
+ * flash_stub/ (build it with the XMOS toolchain; not shipped prebuilt).
  * ======================================================================= */
 
-/* Stub mailbox commands */
+/* Stub mailbox commands (host -> stub, via DBG_COMMAND) */
 #define STUB_CMD_NONE       0x00
 #define STUB_CMD_WRITE      0x01
 #define STUB_CMD_ERASE      0x02
 #define STUB_CMD_DONE       0xFF
 
-/* Stub status values */
+/* Stub status values (stub -> host, via DBG_STATUS) */
 #define STUB_STATUS_READY   0x01
 #define STUB_STATUS_BUSY    0x02
 #define STUB_STATUS_OK      0x03
 #define STUB_STATUS_ERROR   0x80
+
+/* Shared data buffer, relative to the tile RAM base. Must match the stub. */
+#define STUB_DATA_BUF_OFFSET  0x10000u
 
 static esp_err_t wait_stub_status(xmos_jtag_handle_t h, int tile,
                                   uint32_t expected, int timeout_ms)
@@ -1087,6 +1100,31 @@ static esp_err_t wait_stub_status(xmos_jtag_handle_t h, int tile,
     return ESP_ERR_TIMEOUT;
 }
 
+/*
+ * Post one command to the running stub and wait for completion.
+ * Halts the core to write the mailbox atomically (incl. clearing STATUS to
+ * BUSY so a previous OK can't be misread), resumes, then polls STATUS.
+ */
+static esp_err_t stub_command(xmos_jtag_handle_t h, int tile,
+                              uint32_t cmd, uint32_t arg0, uint32_t arg1,
+                              int timeout_ms)
+{
+    esp_err_t err = enter_debug(h, tile);
+    if (err != ESP_OK) return err;
+
+    if ((err = reg_access(h, tile, XMOS_PSWITCH_DBG_STATUS, STUB_STATUS_BUSY, NULL, true)) ||
+        (err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0, arg0, NULL, true)) ||
+        (err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG1, arg1, NULL, true)) ||
+        (err = reg_access(h, tile, XMOS_PSWITCH_DBG_COMMAND, cmd, NULL, true)))
+        return err;
+
+    err = exit_debug(h, tile);
+    if (err != ESP_OK) return err;
+
+    if (cmd == STUB_CMD_DONE) return ESP_OK;   /* no completion to await */
+    return wait_stub_status(h, tile, STUB_STATUS_OK, timeout_ms);
+}
+
 esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
                                   const uint8_t *flash_image,
                                   size_t flash_image_len,
@@ -1101,105 +1139,63 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
 
     esp_err_t err;
     int tile = 0;
-    uint32_t ram_base = XMOS_XS2_RAM_BASE;
+    uint32_t buf_addr = XMOS_XS2_RAM_BASE + STUB_DATA_BUF_OFFSET;
+    const size_t sector_size = 4096;
+    const size_t chunk_size  = 256;   /* SPI flash page size */
 
     ESP_LOGI(TAG, "Programming flash: %zu bytes via JTAG stub", flash_image_len);
 
-    /* Load and run the stub */
-    err = xmos_jtag_load_raw(h, tile, stub, stub_len, ram_base, ram_base);
-    if (err != ESP_OK) return err;
-
-    /* Wait for stub to signal ready */
-    err = wait_stub_status(h, tile, STUB_STATUS_READY, 5000);
+    /* Load and run the stub as a normal XE (two-phase boot sets up the
+     * tile clocks, stack and runtime before the mailbox loop starts). */
+    err = xmos_jtag_load_xe(h, stub, stub_len, true);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Stub did not become ready");
+        ESP_LOGE(TAG, "Failed to load flash stub: %s", esp_err_to_name(err));
         return err;
     }
 
+    /* Wait for the stub to initialise the flash and signal ready */
+    err = wait_stub_status(h, tile, STUB_STATUS_READY, 5000);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Flash stub did not become ready");
+        return err;
+    }
     ESP_LOGI(TAG, "Stub ready, streaming flash data...");
 
-    /* Erase sectors as needed, then write data in chunks.
-     * We erase in 4K sectors (most common SPI flash sector size). */
-    size_t sector_size = 4096;
-    size_t chunk_size = 256;  /* SPI flash page size */
-
-    /* Erase required sectors */
+    /* Erase the sectors the image covers */
     size_t num_sectors = (flash_image_len + sector_size - 1) / sector_size;
     for (size_t s = 0; s < num_sectors; s++) {
-        uint32_t sector_addr = (uint32_t)(s * sector_size);
-
-        /* Enter debug to access mailbox */
-        err = enter_debug(h, tile);
+        err = stub_command(h, tile, STUB_CMD_ERASE,
+                           (uint32_t)(s * sector_size), 0, 5000);
         if (err != ESP_OK) return err;
-
-        err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0, sector_addr, NULL, true);
-        if (err != ESP_OK) return err;
-        err = reg_access(h, tile, XMOS_PSWITCH_DBG_COMMAND, STUB_CMD_ERASE, NULL, true);
-        if (err != ESP_OK) return err;
-
-        err = exit_debug(h, tile);
-        if (err != ESP_OK) return err;
-
-        err = wait_stub_status(h, tile, STUB_STATUS_OK, 5000);
-        if (err != ESP_OK) return err;
-
-        if ((s & 0xF) == 0) {
+        if ((s & 0xF) == 0)
             ESP_LOGI(TAG, "Erasing: %zu/%zu sectors", s + 1, num_sectors);
-        }
     }
 
-    /* Write data in page-sized chunks.
-     * For each chunk, we pack up to 16 bytes at a time into scratch registers
-     * (4 registers x 4 bytes). The stub reassembles and writes to flash. */
-    size_t offset = 0;
-    while (offset < flash_image_len) {
+    /* Write the image in page-sized chunks: data into the RAM buffer first,
+     * then a WRITE command pointing the stub at it. */
+    for (size_t offset = 0; offset < flash_image_len; offset += chunk_size) {
         size_t remaining = flash_image_len - offset;
-        size_t this_chunk = (remaining < chunk_size) ? remaining : chunk_size;
+        size_t this_chunk = remaining < chunk_size ? remaining : chunk_size;
 
         err = enter_debug(h, tile);
         if (err != ESP_OK) return err;
-
-        /* Set flash offset */
-        err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0,
-                         (uint32_t)offset, NULL, true);
-        if (err != ESP_OK) return err;
-
-        /* Set chunk size */
-        err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG1,
-                         (uint32_t)this_chunk, NULL, true);
-        if (err != ESP_OK) return err;
-
-        /* Write chunk data to xCORE RAM (the stub reads from a fixed buffer) */
-        uint32_t buf_addr = ram_base + 0x10000;  /* Stub data buffer area */
         err = xmos_jtag_mem_write(h, tile, buf_addr,
                                   flash_image + offset, this_chunk);
         if (err != ESP_OK) return err;
-
-        /* Issue write command */
-        err = reg_access(h, tile, XMOS_PSWITCH_DBG_COMMAND,
-                         STUB_CMD_WRITE, NULL, true);
-        if (err != ESP_OK) return err;
-
         err = exit_debug(h, tile);
         if (err != ESP_OK) return err;
 
-        err = wait_stub_status(h, tile, STUB_STATUS_OK, 5000);
+        err = stub_command(h, tile, STUB_CMD_WRITE,
+                           (uint32_t)offset, (uint32_t)this_chunk, 5000);
         if (err != ESP_OK) return err;
 
-        offset += this_chunk;
-
-        if ((offset & 0xFFFF) == 0 || offset >= flash_image_len) {
-            ESP_LOGI(TAG, "Writing: %zu/%zu bytes", offset, flash_image_len);
-        }
+        if ((offset & 0xFFFF) == 0 || offset + this_chunk >= flash_image_len)
+            ESP_LOGI(TAG, "Writing: %zu/%zu bytes",
+                     offset + this_chunk, flash_image_len);
     }
 
-    /* Signal done */
-    err = enter_debug(h, tile);
-    if (err != ESP_OK) return err;
-    err = reg_access(h, tile, XMOS_PSWITCH_DBG_COMMAND,
-                     STUB_CMD_DONE, NULL, true);
-    if (err != ESP_OK) return err;
-    err = exit_debug(h, tile);
+    /* Tell the stub we're done (it sets QE and halts) */
+    err = stub_command(h, tile, STUB_CMD_DONE, 0, 0, 1000);
     if (err != ESP_OK) return err;
 
     ESP_LOGI(TAG, "Flash programming complete: %zu bytes", flash_image_len);
@@ -1216,13 +1212,16 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
 
 /* SPI flash commands */
 #define SPI_CMD_WRITE_ENABLE    0x06
-#define SPI_CMD_READ_STATUS     0x05
+#define SPI_CMD_READ_STATUS     0x05  /* RDSR1 */
+#define SPI_CMD_READ_STATUS2    0x35  /* RDSR2 (Winbond/GigaDevice/etc.) */
+#define SPI_CMD_WRITE_STATUS    0x01  /* WRSR (1 or 2 bytes: SR1[,SR2]) */
 #define SPI_CMD_PAGE_PROGRAM    0x02
 #define SPI_CMD_SECTOR_ERASE    0x20
 #define SPI_CMD_READ_JEDEC      0x9F
 #define SPI_CMD_READ_DATA       0x03
 
-#define SPI_STATUS_WIP          0x01  /* Write in progress */
+#define SPI_STATUS_WIP          0x01  /* Write in progress (SR1 bit 0) */
+#define SPI_STATUS2_QE          0x02  /* Quad Enable (SR2 bit 1) */
 
 static void spi_bb_init(const xmos_spi_pins_t *p)
 {
@@ -1269,6 +1268,15 @@ static void spi_bb_cmd(const xmos_spi_pins_t *p, uint8_t cmd)
     spi_bb_cs(p, 1);
 }
 
+static uint8_t spi_bb_read_reg(const xmos_spi_pins_t *p, uint8_t cmd)
+{
+    spi_bb_cs(p, 0);
+    spi_bb_xfer(p, cmd);
+    uint8_t v = spi_bb_xfer(p, 0);
+    spi_bb_cs(p, 1);
+    return v;
+}
+
 /* Poll the flash status register until write-in-progress clears.
  * Bounded: a missing/mis-wired flash would otherwise spin forever. */
 static esp_err_t spi_bb_wait_ready(const xmos_spi_pins_t *p, int timeout_ms)
@@ -1282,6 +1290,40 @@ static esp_err_t spi_bb_wait_ready(const xmos_spi_pins_t *p, int timeout_ms)
     }
     spi_bb_cs(p, 1);
     return err;
+}
+
+/*
+ * Ensure the flash Quad-Enable bit is set so the xCORE-200 boot ROM's
+ * quad read (0xEB) works -- xflash does this and the device will not boot
+ * from a QE-clear flash.  Uses the common Winbond/GigaDevice layout
+ * (QE = bit 1 of Status Register 2, written via WRSR 0x01 with two bytes).
+ * Best-effort: parts with a different QE location are logged, not failed,
+ * since the image data itself is already written by then.
+ */
+static void spi_bb_set_quad_enable(const xmos_spi_pins_t *p)
+{
+    uint8_t sr1 = spi_bb_read_reg(p, SPI_CMD_READ_STATUS);
+    uint8_t sr2 = spi_bb_read_reg(p, SPI_CMD_READ_STATUS2);
+    if (sr2 & SPI_STATUS2_QE) {
+        ESP_LOGI(TAG, "Flash QE already set (SR2=0x%02x)", sr2);
+        return;
+    }
+
+    spi_bb_cmd(p, SPI_CMD_WRITE_ENABLE);
+    spi_bb_cs(p, 0);
+    spi_bb_xfer(p, SPI_CMD_WRITE_STATUS);
+    spi_bb_xfer(p, sr1);                       /* preserve SR1 */
+    spi_bb_xfer(p, (uint8_t)(sr2 | SPI_STATUS2_QE));
+    spi_bb_cs(p, 1);
+    spi_bb_wait_ready(p, 200);
+
+    uint8_t check = spi_bb_read_reg(p, SPI_CMD_READ_STATUS2);
+    if (check & SPI_STATUS2_QE)
+        ESP_LOGI(TAG, "Flash QE set (SR2 0x%02x -> 0x%02x)", sr2, check);
+    else
+        ESP_LOGW(TAG, "Flash QE not set (SR2 still 0x%02x). This flash may "
+                 "use a different QE location; device may not boot in quad "
+                 "mode.", check);
 }
 
 esp_err_t xmos_spi_flash_program(xmos_jtag_handle_t h,
@@ -1398,11 +1440,18 @@ esp_err_t xmos_spi_flash_program(xmos_jtag_handle_t h,
     }
     spi_bb_cs(spi_pins, 1);
 
+    if (!verify_ok) {
+        gpio_set_level(h->pins.srst_n, 1);
+        return ESP_FAIL;
+    }
+
+    /* The xCORE-200 boot ROM reads the flash with a quad command (0xEB),
+     * so the Quad-Enable bit must be set or the device won't boot from the
+     * image we just wrote.  Do this last (after data + verify), like xflash. */
+    spi_bb_set_quad_enable(spi_pins);
+
     /* Release XMOS from reset */
     gpio_set_level(h->pins.srst_n, 1);
-
-    if (!verify_ok)
-        return ESP_FAIL;
 
     ESP_LOGI(TAG, "SPI flash programmed and verified OK (%zu bytes)", image_len);
     return ESP_OK;
