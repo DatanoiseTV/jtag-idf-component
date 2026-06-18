@@ -171,6 +171,7 @@ static inline uint32_t xmos_chain_ir_reg_write(uint8_t reg)
 #define XMOS_SSWITCH_PLL_CTL         0x06
 #define XMOS_SSWITCH_CLK_DIVIDER     0x07
 #define XMOS_SSWITCH_REF_CLK_DIV     0x08
+#define XMOS_SSWITCH_JTAG_DEVICE_ID  0x09   /* xs3a_registers.h JTAG_DEVICE_ID */
 
 /* =========================================================================
  * Processor State (PS) resource identifiers

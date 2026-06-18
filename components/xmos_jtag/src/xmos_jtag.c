@@ -186,18 +186,20 @@ static esp_err_t reg_access(xmos_jtag_handle_t h, int tile, uint8_t reg,
 
 static esp_err_t enter_debug(xmos_jtag_handle_t h, int tile)
 {
-    /* Request debug interrupt */
+    /* Request debug interrupt (sc_jtag dbg_enter_debug_mode: DBG_INT=1) */
     esp_err_t err = reg_access(h, tile, XMOS_PSWITCH_DBG_INT,
                                XMOS_DBG_INT_REQ, NULL, true);
     if (err != ESP_OK) return err;
 
     /* Poll for debug mode entry */
+    uint32_t val = 0;
     for (int attempt = 0; attempt < 100; attempt++) {
-        uint32_t val = 0;
         err = reg_access(h, tile, XMOS_PSWITCH_DBG_INT, 0, &val, false);
         if (err != ESP_OK) return err;
 
-        if (val & XMOS_DBG_INT_IN_DBG) {
+        /* 0xFFFFFFFF means TDO is floating (cable off / no contact), not a
+         * real "in debug" reading -- the IN_DBG bit would falsely look set. */
+        if (val != 0xFFFFFFFFu && (val & XMOS_DBG_INT_IN_DBG)) {
             ESP_LOGD(TAG, "Tile %d entered debug mode (attempt %d)", tile, attempt);
             return ESP_OK;
         }
@@ -205,7 +207,14 @@ static esp_err_t enter_debug(xmos_jtag_handle_t h, int tile)
         h->transport->idle(h->transport, 100);
     }
 
-    ESP_LOGE(TAG, "Tile %d failed to enter debug mode", tile);
+    if (val == 0xFFFFFFFFu) {
+        ESP_LOGE(TAG, "Tile %d: DBG_INT reads all-ones -- TDO floating? "
+                 "Check JTAG wiring/contact", tile);
+    } else {
+        ESP_LOGE(TAG, "Tile %d failed to enter debug mode (DBG_INT=0x%08lx). "
+                 "Core may not be running; will retry without bus reset.",
+                 tile, (unsigned long)val);
+    }
     return ESP_ERR_TIMEOUT;
 }
 
@@ -576,6 +585,25 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
         ESP_LOGW(TAG, "Unknown IDCODE: 0x%08lx", (unsigned long)idcode);
     }
 
+    /* Self-test the mux-open register path: read the system switch's JTAG
+     * device-ID register (sc_jtag XS1_SSWITCH_JTAG_DEVICE_ID_NUM = 0x9).
+     * A value matching the IDCODE confirms SETMUX + 22-bit register access
+     * work end-to-end on this board; 0x0 or 0xFFFFFFFF means the mux-open
+     * path (not just detection) is the problem -- which isolates a "failed
+     * to enter debug mode" to wiring/framing vs. core state. */
+    uint32_t sw_id = 0;
+    if (xmos_jtag_read_reg(h, -1, XMOS_SSWITCH_JTAG_DEVICE_ID, &sw_id) == ESP_OK) {
+        ESP_LOGI(TAG, "Mux-open self-test: SSWITCH device-id (reg 0x9) = 0x%08lx%s",
+                 (unsigned long)sw_id,
+                 (sw_id == 0 || sw_id == 0xFFFFFFFFu)
+                     ? "  <-- register access NOT working" : "");
+    }
+    /* Leave the chain closed for whatever runs next */
+    mux_select(h, XMOS_MUX_NC);
+    h->transport->reset(h->transport);
+    h->mux_open = false;
+    h->mux_state = -1;
+
     h->chip = *chip_info;
     return ESP_OK;
 }
@@ -781,43 +809,62 @@ esp_err_t xmos_jtag_mem_read(xmos_jtag_handle_t h,
  * Public API: High-level loading
  * ======================================================================= */
 
-/**
- * Reset the target ahead of a JTAG load:
- *   1. Assert system reset (if the pin is wired)
- *   2. Reset the TAP state machine
- *   3. Release system reset and let the boot ROM start
- *
- * The tile is then halted via a debug interrupt (enter_debug) before its
- * RAM is rewritten, so whatever the device tried to boot from does not
- * matter.  A previous revision shifted a "SET_TEST_MODE / boot-from-JTAG"
- * word here, but the bit layout had no public source and conflicted with
- * the 0xFACED00 key XMOS itself shifts into that register -- removed.
- */
-static esp_err_t jtag_boot_sequence(xmos_jtag_handle_t h)
+/** Reset only the TAP state machine (TMS); leaves the target running. */
+static esp_err_t jtag_reset_tap(xmos_jtag_handle_t h)
 {
-    esp_err_t err;
-
-    /* Assert system reset if available */
-    if (h->pins.srst_n != GPIO_NUM_NC) {
-        gpio_set_level(h->pins.srst_n, 0);
-        esp_rom_delay_us(1000);
-    } else {
-        ESP_LOGW(TAG, "No SRST pin: target not reset, halting it as-is");
-    }
-
-    /* Reset TAP -- also forgets any MUX state */
-    err = h->transport->reset(h->transport);
-    if (err != ESP_OK) return err;
+    esp_err_t err = h->transport->reset(h->transport);
     h->mux_open = false;
     h->mux_state = -1;
+    return err;
+}
 
-    if (h->pins.srst_n != GPIO_NUM_NC) {
-        gpio_set_level(h->pins.srst_n, 1);
-        /* Give the boot ROM time to come up before halting it */
-        esp_rom_delay_us(50000);
-    }
+/** Pulse the system-reset pin and let the boot ROM restart, then reset TAP. */
+static esp_err_t jtag_pulse_srst(xmos_jtag_handle_t h)
+{
+    if (h->pins.srst_n == GPIO_NUM_NC)
+        return ESP_ERR_NOT_SUPPORTED;
+    gpio_set_level(h->pins.srst_n, 0);
+    esp_rom_delay_us(1000);
+    gpio_set_level(h->pins.srst_n, 1);
+    esp_rom_delay_us(50000);     /* boot ROM start-up */
+    return jtag_reset_tap(h);
+}
 
-    return ESP_OK;
+/**
+ * Halt a tile in debug mode, ready for RAM access.
+ *
+ * Strategy: first attach to the RUNNING core and interrupt it WITHOUT a
+ * bus reset.  On a board whose flash boot is corrupt, asserting SRST just
+ * re-runs the failing boot and can leave the core stopped and un-haltable,
+ * whereas an application that is already running (the device enumerates on
+ * the host) can be interrupted directly -- which is how XMOS's own xgdb
+ * "interrupt" works (sc_jtag dbg_cmd_interrupt: just DBG_INT=1, no reset).
+ * Only if the interrupt fails do we fall back to a hard SRST + retry.
+ *
+ * A previous revision shifted a "SET_TEST_MODE / boot-from-JTAG" word here,
+ * but its bit layout had no public source and collided with the 0xFACED00
+ * key XMOS itself shifts into that register -- removed.
+ */
+static esp_err_t attach_tile_debug(xmos_jtag_handle_t h, int tile)
+{
+    esp_err_t err = jtag_reset_tap(h);
+    if (err != ESP_OK) return err;
+
+    err = mux_select(h, xmos_tile_to_mux(tile));
+    if (err != ESP_OK) return err;
+
+    err = enter_debug(h, tile);
+    if (err == ESP_OK) return ESP_OK;
+
+    if (h->pins.srst_n == GPIO_NUM_NC)
+        return err;
+
+    ESP_LOGW(TAG, "Tile %d: interrupt failed, trying SRST reset then halt", tile);
+    err = jtag_pulse_srst(h);
+    if (err != ESP_OK) return err;
+    err = mux_select(h, xmos_tile_to_mux(tile));
+    if (err != ESP_OK) return err;
+    return enter_debug(h, tile);
 }
 
 esp_err_t xmos_jtag_load_raw(xmos_jtag_handle_t h,
@@ -831,16 +878,8 @@ esp_err_t xmos_jtag_load_raw(xmos_jtag_handle_t h,
              image_len, tile, (unsigned long)load_addr,
              (unsigned long)entry_point);
 
-    /* JTAG boot sequence */
-    err = jtag_boot_sequence(h);
-    if (err != ESP_OK) return err;
-
-    /* Open MUX to target tile */
-    err = mux_select(h, xmos_tile_to_mux(tile));
-    if (err != ESP_OK) return err;
-
-    /* Enter debug mode */
-    err = enter_debug(h, tile);
+    /* Halt the tile (interrupt running core, SRST fallback) */
+    err = attach_tile_debug(h, tile);
     if (err != ESP_OK) return err;
 
     /* Write image to RAM */
@@ -884,10 +923,6 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* JTAG boot sequence */
-    err = jtag_boot_sequence(h);
-    if (err != ESP_OK) return err;
-
     /* Load segments, grouped by tile */
     for (uint8_t tile = 0; tile < parsed.num_tiles; tile++) {
         bool has_segments = false;
@@ -899,11 +934,8 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
         }
         if (!has_segments) continue;
 
-        /* Open MUX to this tile and enter debug */
-        err = mux_select(h, xmos_tile_to_mux(tile));
-        if (err != ESP_OK) return err;
-
-        err = enter_debug(h, tile);
+        /* Halt this tile (interrupt running core, SRST fallback) */
+        err = attach_tile_debug(h, tile);
         if (err != ESP_OK) return err;
 
         /* Write all segments for this tile */
