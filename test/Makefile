@@ -1,11 +1,12 @@
 CC ?= cc
-CFLAGS = -Wall -Wextra -g -DTEST_HOST -I../components/xmos_jtag/src
+CFLAGS = -Wall -Wextra -g -DTEST_HOST \
+         -I../components/xmos_jtag/src -I../components/xmos_jtag/include
 
 .PHONY: all test clean
 
 all: test_xe_parser
 
-test_xe_parser: test_xe_parser.c ../components/xmos_jtag/src/xmos_xe.c ../components/xmos_jtag/src/xmos_regs.h ../components/xmos_jtag/src/xmos_xe.h
+test_xe_parser: test_xe_parser.c ../components/xmos_jtag/src/xmos_xe.c ../components/xmos_jtag/src/xmos_regs.h ../components/xmos_jtag/include/xmos_xe.h
 	$(CC) $(CFLAGS) -o $@ test_xe_parser.c
 
 test: test_xe_parser

@@ -74,7 +74,8 @@ static inline uint64_t rd64(const uint8_t *p)
  * Helper: parse ELF segments from an embedded ELF binary
  * ---------------------------------------------------------------------- */
 static esp_err_t parse_elf_segments(const uint8_t *elf_data, size_t elf_len,
-                                    uint8_t tile, xe_parsed_t *out)
+                                    uint8_t tile, xe_parsed_t *out,
+                                    uint32_t *out_entry)
 {
     if (elf_len < sizeof(elf32_ehdr_t)) {
         ESP_LOGE(TAG, "ELF too small (%zu bytes)", elf_len);
@@ -96,9 +97,11 @@ static esp_err_t parse_elf_segments(const uint8_t *elf_data, size_t elf_len,
         return ESP_ERR_INVALID_SIZE;
     }
 
-    /* Record entry point for this tile */
-    if (tile < 4) {
-        out->entry_points[tile] = ehdr->e_entry;
+    /* Entry point: e_entry, or the tile RAM base if zero (tool_axe rule). */
+    uint32_t entry = ehdr->e_entry ? ehdr->e_entry : XMOS_XS2_RAM_BASE;
+    if (out_entry) *out_entry = entry;
+    if (tile < XE_MAX_TILES) {
+        out->entry_points[tile] = entry;
         if (tile >= out->num_tiles)
             out->num_tiles = tile + 1;
     }
@@ -136,6 +139,37 @@ static esp_err_t parse_elf_segments(const uint8_t *elf_data, size_t elf_len,
 }
 
 /* -------------------------------------------------------------------------
+ * Boot-step emitters (mirror tool_axe BootSequencer)
+ * ---------------------------------------------------------------------- */
+static xe_step_t *xe_add_step(xe_parsed_t *out)
+{
+    if (out->num_steps >= XE_MAX_STEPS) return NULL;
+    return &out->steps[out->num_steps++];
+}
+
+static void xe_emit_load(xe_parsed_t *out, uint8_t tile, uint32_t entry,
+                         uint16_t seg_first, uint16_t seg_count)
+{
+    xe_step_t *s = xe_add_step(out);
+    if (!s) { ESP_LOGW(TAG, "Too many boot steps, truncating"); return; }
+    s->op = XE_OP_LOAD;
+    s->tile = tile;
+    s->entry = entry;
+    s->seg_first = seg_first;
+    s->seg_count = seg_count;
+}
+
+static void xe_emit_run(xe_parsed_t *out, uint8_t mask, bool wait)
+{
+    if (mask == 0) return;
+    xe_step_t *s = xe_add_step(out);
+    if (!s) { ESP_LOGW(TAG, "Too many boot steps, truncating"); return; }
+    s->op = XE_OP_RUN;
+    s->run_mask = mask;
+    s->run_wait = wait;
+}
+
+/* -------------------------------------------------------------------------
  * Public: parse XE file
  * ---------------------------------------------------------------------- */
 esp_err_t xe_parse(const uint8_t *xe_data, size_t xe_len,
@@ -152,10 +186,17 @@ esp_err_t xe_parse(const uint8_t *xe_data, size_t xe_len,
     if (xe_data[0] != XE_MAGIC_0 || xe_data[1] != XE_MAGIC_1 ||
         xe_data[2] != XE_MAGIC_2 || xe_data[3] != XE_MAGIC_3) {
 
-        /* Might be a raw ELF -- try parsing directly */
+        /* Might be a raw ELF -- try parsing directly as a single load+goto */
         if (xe_len >= 4 && rd32(xe_data) == ELF_MAGIC) {
             ESP_LOGI(TAG, "Input is raw ELF, treating as tile 0");
-            return parse_elf_segments(xe_data, xe_len, 0, out);
+            uint32_t entry = 0;
+            uint16_t seg_first = (uint16_t)out->num_segments;
+            esp_err_t err = parse_elf_segments(xe_data, xe_len, 0, out, &entry);
+            if (err != ESP_OK) return err;
+            xe_emit_load(out, 0, entry, seg_first,
+                         (uint16_t)(out->num_segments - seg_first));
+            xe_emit_run(out, 0x1, false);   /* run tile 0, final */
+            return ESP_OK;
         }
 
         ESP_LOGE(TAG, "Not an XE file (bad magic)");
@@ -165,6 +206,13 @@ esp_err_t xe_parse(const uint8_t *xe_data, size_t xe_len,
     uint16_t version = rd16(xe_data + 4);
     ESP_LOGD(TAG, "XE version %d, parsing sectors...", version);
 
+    /*
+     * Sector -> boot-step state machine, ported from tool_axe BootSequencer:
+     *   sched_mask : tiles loaded since the last RUN
+     *   call_mask  : cores with a pending CALL (run-and-wait)
+     *   goto_mask  : cores with a pending GOTO (final run)
+     */
+    uint8_t sched_mask = 0, call_mask = 0, goto_mask = 0;
     size_t off = XE_FILE_HDR_SIZE;
 
     while (off + XE_SECTOR_HDR_SIZE <= xe_len) {
@@ -175,7 +223,6 @@ esp_err_t xe_parse(const uint8_t *xe_data, size_t xe_len,
             break;
         }
 
-        /* Read sector length (uint64) */
         uint64_t length = rd64(xe_data + off + 4);
         size_t next_off = off + XE_SECTOR_HDR_SIZE + (size_t)length;
 
@@ -185,14 +232,13 @@ esp_err_t xe_parse(const uint8_t *xe_data, size_t xe_len,
             return ESP_ERR_INVALID_SIZE;
         }
 
-        /* Pointer to sector data (after 12-byte header) */
         const uint8_t *sdata = xe_data + off + XE_SECTOR_HDR_SIZE;
         uint8_t pad_byte = 0;
-        size_t content_off = 0;  /* offset into sdata where content starts */
+        size_t content_off = 0;
 
         if (length > 0) {
             pad_byte = sdata[0];
-            content_off = XE_SECTOR_PAD_DESC_SIZE;  /* skip padding descriptor */
+            content_off = XE_SECTOR_PAD_DESC_SIZE;
         }
 
         size_t content_len = (length > XE_SECTOR_PAD_DESC_SIZE)
@@ -200,86 +246,104 @@ esp_err_t xe_parse(const uint8_t *xe_data, size_t xe_len,
                            : 0;
 
         switch (stype) {
-        case XE_SECTOR_ELF: {
-            /* Sub-header: node(2) + core(2) + address(8) */
-            if (content_len < XE_SECTOR_SUB_HDR_SIZE) break;
-
-            uint16_t core = rd16(sdata + content_off + 2);
-            /* address at content_off + 4 (8 bytes, unused for ELF) */
-
-            const uint8_t *elf_start = sdata + content_off + XE_SECTOR_SUB_HDR_SIZE;
-            size_t elf_len_actual = content_len - XE_SECTOR_SUB_HDR_SIZE;
-
-            ESP_LOGD(TAG, "ELF sector at 0x%zx: core=%d elf_size=%zu",
-                     off, core, elf_len_actual);
-
-            esp_err_t err = parse_elf_segments(elf_start, elf_len_actual,
-                                               (uint8_t)core, out);
-            if (err != ESP_OK) return err;
-            break;
-        }
-
+        case XE_SECTOR_ELF:
         case XE_SECTOR_BINARY: {
             if (content_len < XE_SECTOR_SUB_HDR_SIZE) break;
 
             uint16_t core = rd16(sdata + content_off + 2);
             uint64_t addr = rd64(sdata + content_off + 4);
-
-            const uint8_t *bin_data = sdata + content_off + XE_SECTOR_SUB_HDR_SIZE;
-            size_t bin_len = content_len - XE_SECTOR_SUB_HDR_SIZE;
-
-            if (out->num_segments < XE_MAX_SEGMENTS) {
-                xe_segment_t *seg = &out->segments[out->num_segments++];
-                seg->paddr  = (uint32_t)addr;
-                seg->filesz = (uint32_t)bin_len;
-                seg->memsz  = (uint32_t)bin_len;
-                seg->data   = bin_data;
-                seg->tile   = (uint8_t)core;
-                if (core < 4 && core >= out->num_tiles)
-                    out->num_tiles = (uint8_t)(core + 1);
-
-                ESP_LOGD(TAG, "BIN sector: core=%d addr=0x%08lx size=%zu",
-                         core, (unsigned long)(uint32_t)addr, bin_len);
+            if (core >= XE_MAX_TILES) {
+                ESP_LOGW(TAG, "Sector core %u out of range, skipping", core);
+                break;
             }
+
+            /* tool_axe: an ELF for a core with a pending CALL flushes the
+             * accumulated setup phase as a run-and-wait before loading. */
+            if (call_mask & (1u << core)) {
+                xe_emit_run(out, sched_mask, true);
+                sched_mask = 0;
+                call_mask = 0;
+            }
+
+            const uint8_t *body = sdata + content_off + XE_SECTOR_SUB_HDR_SIZE;
+            size_t body_len = content_len - XE_SECTOR_SUB_HDR_SIZE;
+            uint16_t seg_first = (uint16_t)out->num_segments;
+            uint32_t entry;
+
+            if (stype == XE_SECTOR_ELF) {
+                esp_err_t err = parse_elf_segments(body, body_len,
+                                                   (uint8_t)core, out, &entry);
+                if (err != ESP_OK) return err;
+            } else {
+                /* Raw binary: one segment loaded at the given address */
+                if (out->num_segments < XE_MAX_SEGMENTS) {
+                    xe_segment_t *seg = &out->segments[out->num_segments++];
+                    seg->paddr = (uint32_t)addr;
+                    seg->filesz = (uint32_t)body_len;
+                    seg->memsz = (uint32_t)body_len;
+                    seg->data = body;
+                    seg->tile = (uint8_t)core;
+                }
+                entry = (uint32_t)addr;
+                out->entry_points[core] = entry;
+                if (core >= out->num_tiles) out->num_tiles = (uint8_t)(core + 1);
+            }
+
+            xe_emit_load(out, (uint8_t)core, entry, seg_first,
+                         (uint16_t)(out->num_segments - seg_first));
+            sched_mask |= (uint8_t)(1u << core);
+            ESP_LOGD(TAG, "%s sector core=%u entry=0x%08lx",
+                     stype == XE_SECTOR_ELF ? "ELF" : "BIN",
+                     core, (unsigned long)entry);
             break;
         }
 
-        case XE_SECTOR_GOTO:
         case XE_SECTOR_CALL: {
             if (content_len < XE_SECTOR_SUB_HDR_SIZE) break;
-
             uint16_t core = rd16(sdata + content_off + 2);
-            uint64_t addr = rd64(sdata + content_off + 4);
-
-            if (core < 4) {
-                out->entry_points[core] = (uint32_t)addr;
-                if (core >= out->num_tiles)
-                    out->num_tiles = (uint8_t)(core + 1);
-
-                ESP_LOGD(TAG, "%s sector: core=%d addr=0x%08lx",
-                         stype == XE_SECTOR_GOTO ? "GOTO" : "CALL",
-                         core, (unsigned long)(uint32_t)addr);
+            if (core >= XE_MAX_TILES) break;
+            /* A repeated core means a new run batch starts (tool_axe). */
+            if (call_mask & (1u << core)) {
+                xe_emit_run(out, sched_mask, true);
+                sched_mask = 0;
+                call_mask = 0;
             }
+            call_mask |= (uint8_t)(1u << core);
+            ESP_LOGD(TAG, "CALL sector core=%u", core);
             break;
         }
 
-        case XE_SECTOR_CONFIG:
-        case XE_SECTOR_XN:
-        case XE_SECTOR_NODEDESC:
-        case XE_SECTOR_XSCOPE:
-            ESP_LOGD(TAG, "Skipping sector type 0x%04x at 0x%zx", stype, off);
+        case XE_SECTOR_GOTO: {
+            if (content_len < XE_SECTOR_SUB_HDR_SIZE) break;
+            uint16_t core = rd16(sdata + content_off + 2);
+            if (core >= XE_MAX_TILES) break;
+            /* Any pending CALLs run-and-wait before the final GOTO batch. */
+            if (call_mask) {
+                xe_emit_run(out, sched_mask, true);
+                sched_mask = 0;
+                call_mask = 0;
+            }
+            goto_mask |= (uint8_t)(1u << core);
+            ESP_LOGD(TAG, "GOTO sector core=%u", core);
             break;
+        }
 
         default:
-            ESP_LOGD(TAG, "Unknown sector type 0x%04x at 0x%zx", stype, off);
+            ESP_LOGD(TAG, "Skipping sector type 0x%04x at 0x%zx", stype, off);
             break;
         }
 
         off = next_off;
     }
 
-    ESP_LOGI(TAG, "Parsed %zu segments across %d tiles",
-             out->num_segments, out->num_tiles);
+    /* Flush the final run batch: GOTO (final, no wait) or trailing CALLs. */
+    if (goto_mask)
+        xe_emit_run(out, sched_mask, false);
+    else if (call_mask)
+        xe_emit_run(out, sched_mask, true);
+
+    ESP_LOGI(TAG, "Parsed %zu segments, %zu boot steps across %d tiles",
+             out->num_segments, out->num_steps, out->num_tiles);
 
     return ESP_OK;
 }

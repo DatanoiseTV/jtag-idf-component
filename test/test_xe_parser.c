@@ -328,7 +328,7 @@ static void test_padding_byte(void)
 
 static void test_goto_overrides_elf_entry(void)
 {
-    TEST(xe_goto_overrides_elf_entry_point);
+    TEST(xe_goto_uses_elf_entry_not_sector_addr);
     uint8_t elf[256];
     uint8_t code[] = { 0xFF };
     size_t elf_len = build_test_elf(elf, sizeof(elf), 0x80000, 0x40000, code, 1);
@@ -338,29 +338,88 @@ static void test_goto_overrides_elf_entry(void)
     uint8_t sh[12]; build_sub_hdr(sh, 0, 0, 0);
     size_t off = xe_add_sector(xe, 8, XE_SECTOR_ELF, 0, sh, 12, elf, elf_len);
 
-    /* GOTO with different address should override the ELF entry */
+    /* tool_axe ignores the GOTO address; the core runs at the ELF entry. */
     uint8_t g[12]; build_sub_hdr(g, 0, 0, 0xDEAD0000);
     off = xe_add_sector(xe, off, XE_SECTOR_GOTO, 0, g, 12, NULL, 0);
     off = xe_add_last(xe, off);
 
     xe_parsed_t p;
     if (xe_parse(xe, off, &p) != ESP_OK) { FAIL("parse failed"); return; }
-    if (p.entry_points[0] != 0xDEAD0000) { FAILF("entry=0x%x, want 0xDEAD0000", p.entry_points[0]); return; }
+    if (p.entry_points[0] != 0x80000) { FAILF("entry=0x%x, want 0x80000", p.entry_points[0]); return; }
+    /* Steps: LOAD tile0 @0x80000, then RUN {tile0} final (no wait) */
+    if (p.num_steps != 2) { FAILF("num_steps=%zu, want 2", p.num_steps); return; }
+    if (p.steps[0].op != XE_OP_LOAD || p.steps[0].tile != 0 ||
+        p.steps[0].entry != 0x80000) { FAIL("step0 load"); return; }
+    if (p.steps[1].op != XE_OP_RUN || p.steps[1].run_mask != 0x1 ||
+        p.steps[1].run_wait) { FAIL("step1 run goto"); return; }
     PASS();
 }
 
 static void test_call_sector(void)
 {
-    TEST(xe_call_sector_sets_entry);
-    uint8_t xe[256]; memset(xe,0,sizeof(xe));
+    TEST(xe_two_phase_setup_call_then_app_goto);
+    /* Real single-tile layout: setup ELF, CALL, app ELF, GOTO. */
+    uint8_t setup[256], app[256];
+    uint8_t c1[] = { 0x11 }, c2[] = { 0x22 };
+    size_t setup_len = build_test_elf(setup, sizeof(setup), 0x80000, 0x40000, c1, 1);
+    size_t app_len   = build_test_elf(app,   sizeof(app),   0x80100, 0x41000, c2, 1);
+
+    uint8_t xe[1024]; memset(xe,0,sizeof(xe));
     xe_file_header(xe, 2);
-    uint8_t sh[12]; build_sub_hdr(sh, 0, 0, 0xCAFE0000);
-    size_t off = xe_add_sector(xe, 8, XE_SECTOR_CALL, 0, sh, 12, NULL, 0);
+    uint8_t sh[12]; build_sub_hdr(sh, 0, 0, 0);
+    size_t off = xe_add_sector(xe, 8, XE_SECTOR_ELF, 0, sh, 12, setup, setup_len);
+    off = xe_add_sector(xe, off, XE_SECTOR_CALL, 0, sh, 12, NULL, 0);
+    off = xe_add_sector(xe, off, XE_SECTOR_ELF, 0, sh, 12, app, app_len);
+    off = xe_add_sector(xe, off, XE_SECTOR_GOTO, 0, sh, 12, NULL, 0);
     off = xe_add_last(xe, off);
 
     xe_parsed_t p;
     if (xe_parse(xe, off, &p) != ESP_OK) { FAIL("parse failed"); return; }
-    if (p.entry_points[0] != 0xCAFE0000) { FAILF("entry=0x%x", p.entry_points[0]); return; }
+    /* Expect: LOAD(0,0x80000) RUN{0}wait  LOAD(0,0x80100) RUN{0}final */
+    if (p.num_steps != 4) { FAILF("num_steps=%zu, want 4", p.num_steps); return; }
+    if (p.steps[0].op != XE_OP_LOAD || p.steps[0].entry != 0x80000) { FAIL("s0"); return; }
+    if (p.steps[1].op != XE_OP_RUN  || !p.steps[1].run_wait)        { FAIL("s1 call"); return; }
+    if (p.steps[2].op != XE_OP_LOAD || p.steps[2].entry != 0x80100) { FAIL("s2"); return; }
+    if (p.steps[3].op != XE_OP_RUN  ||  p.steps[3].run_wait)        { FAIL("s3 goto"); return; }
+    if (p.entry_points[0] != 0x80100) { FAILF("entry=0x%x", p.entry_points[0]); return; }
+    PASS();
+}
+
+static void test_two_phase_multitile(void)
+{
+    TEST(xe_two_phase_two_tiles_batched_like_tool_axe);
+    /* Real 2-tile layout: ELF0,CALL0,ELF1,CALL1,ELF0,GOTO0,ELF1,GOTO1.
+     * Setups must run together (one wait batch), then apps together. */
+    uint8_t e[256]; uint8_t c[] = { 0x5A };
+    size_t elen = build_test_elf(e, sizeof(e), 0x80000, 0x40000, c, 1);
+    uint8_t s0[12], s1[12];
+    build_sub_hdr(s0, 0, 0, 0);
+    build_sub_hdr(s1, 0, 1, 0);
+
+    uint8_t xe[2048]; memset(xe,0,sizeof(xe));
+    xe_file_header(xe, 2);
+    size_t off = xe_add_sector(xe, 8,  XE_SECTOR_ELF,  0, s0, 12, e, elen);
+    off = xe_add_sector(xe, off, XE_SECTOR_CALL, 0, s0, 12, NULL, 0);
+    off = xe_add_sector(xe, off, XE_SECTOR_ELF,  0, s1, 12, e, elen);
+    off = xe_add_sector(xe, off, XE_SECTOR_CALL, 0, s1, 12, NULL, 0);
+    off = xe_add_sector(xe, off, XE_SECTOR_ELF,  0, s0, 12, e, elen);
+    off = xe_add_sector(xe, off, XE_SECTOR_GOTO, 0, s0, 12, NULL, 0);
+    off = xe_add_sector(xe, off, XE_SECTOR_ELF,  0, s1, 12, e, elen);
+    off = xe_add_sector(xe, off, XE_SECTOR_GOTO, 0, s1, 12, NULL, 0);
+    off = xe_add_last(xe, off);
+
+    xe_parsed_t p;
+    if (xe_parse(xe, off, &p) != ESP_OK) { FAIL("parse failed"); return; }
+    /* LOAD0, LOAD1, RUN{0,1}wait, LOAD0, LOAD1, RUN{0,1}final */
+    if (p.num_steps != 6) { FAILF("num_steps=%zu, want 6", p.num_steps); return; }
+    if (p.steps[0].op != XE_OP_LOAD || p.steps[0].tile != 0) { FAIL("s0"); return; }
+    if (p.steps[1].op != XE_OP_LOAD || p.steps[1].tile != 1) { FAIL("s1"); return; }
+    if (p.steps[2].op != XE_OP_RUN || p.steps[2].run_mask != 0x3 ||
+        !p.steps[2].run_wait) { FAILF("s2 mask=0x%x wait=%d", p.steps[2].run_mask, p.steps[2].run_wait); return; }
+    if (p.steps[3].op != XE_OP_LOAD || p.steps[3].tile != 0) { FAIL("s3"); return; }
+    if (p.steps[4].op != XE_OP_LOAD || p.steps[4].tile != 1) { FAIL("s4"); return; }
+    if (p.steps[5].op != XE_OP_RUN || p.steps[5].run_mask != 0x3 ||
+        p.steps[5].run_wait) { FAIL("s5 final"); return; }
     PASS();
 }
 
@@ -1164,6 +1223,7 @@ int main(int argc, char **argv)
     test_padding_byte();
     test_goto_overrides_elf_entry();
     test_call_sector();
+    test_two_phase_multitile();
     test_unknown_sectors_skipped();
     test_config_xn_xscope_skipped();
     test_zero_length_sector();

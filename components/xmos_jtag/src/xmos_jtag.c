@@ -299,17 +299,42 @@ static esp_err_t dbg_setps(xmos_jtag_handle_t h, int tile,
                       XMOS_DBG_CMD_SETPS, NULL, true);
 }
 
-/** Read a processor state register via GETPS debug command. */
-static esp_err_t dbg_getps(xmos_jtag_handle_t h, int tile,
-                           uint32_t ps_res, uint32_t *value)
+/** Resume a tile from debug at the given entry point (SPC), interrupts off. */
+static esp_err_t start_tile(xmos_jtag_handle_t h, int tile, uint32_t entry)
 {
-    esp_err_t err;
-    err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0, ps_res, NULL, true);
+    esp_err_t err = dbg_setps(h, tile, XMOS_PS_DBG_SPC, entry);
     if (err != ESP_OK) return err;
-    err = reg_access(h, tile, XMOS_PSWITCH_DBG_COMMAND,
-                     XMOS_DBG_CMD_GETPS, NULL, true);
+    err = dbg_setps(h, tile, XMOS_PS_DBG_SSR, 0);
     if (err != ESP_OK) return err;
-    return reg_access(h, tile, XMOS_PSWITCH_DBG_ARG2, 0, value, false);
+    return exit_debug(h, tile);
+}
+
+/**
+ * Wait for a resumed tile to re-enter debug mode -- the XE "CALL" return.
+ *
+ * After a setup (CALL) image is resumed, the XMOS runtime runs its
+ * initialisation and, under a debugger, signals completion by trapping
+ * back into debug mode (the simulator models this as a "done" syscall;
+ * tool_axe BootSequencer runs the cores until that signal).  We poll
+ * DBG_INT for IN_DBG.  On timeout we force-halt and continue so a slightly
+ * different return mechanism can't wedge the whole sequence.
+ */
+static esp_err_t wait_debug_reentry(xmos_jtag_handle_t h, int tile, int timeout_ms)
+{
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+
+    while (esp_timer_get_time() < deadline) {
+        uint32_t val = 0;
+        esp_err_t err = reg_access(h, tile, XMOS_PSWITCH_DBG_INT, 0, &val, false);
+        if (err != ESP_OK) return err;
+        if (val != 0xFFFFFFFFu && (val & XMOS_DBG_INT_IN_DBG))
+            return ESP_OK;
+        h->transport->idle(h->transport, 200);
+    }
+
+    ESP_LOGW(TAG, "Tile %d setup did not return to debug in %d ms; force-halting",
+             tile, timeout_ms);
+    return enter_debug(h, tile);   /* force back into debug, best effort */
 }
 
 /* =========================================================================
@@ -907,75 +932,105 @@ esp_err_t xmos_jtag_load_raw(xmos_jtag_handle_t h,
     return ESP_OK;
 }
 
+/* Write one parsed segment (file data + zero-filled BSS) to a halted tile. */
+static esp_err_t load_segment(xmos_jtag_handle_t h, const xe_segment_t *seg)
+{
+    esp_err_t err;
+    if (seg->filesz > 0) {
+        ESP_LOGI(TAG, "  tile %d: 0x%08lx (%lu bytes)", seg->tile,
+                 (unsigned long)seg->paddr, (unsigned long)seg->filesz);
+        err = xmos_jtag_mem_write(h, seg->tile, seg->paddr,
+                                  seg->data, seg->filesz);
+        if (err != ESP_OK) return err;
+    }
+    if (seg->memsz > seg->filesz) {
+        uint32_t bss = seg->paddr + seg->filesz;
+        for (size_t off = 0; off < seg->memsz - seg->filesz; off += 4) {
+            err = dbg_mem_write_word(h, seg->tile, bss + off, 0);
+            if (err != ESP_OK) return err;
+        }
+    }
+    return ESP_OK;
+}
+
+/* Halt a tile for a LOAD step.  First contact interrupts the running core
+ * (SRST fallback); later loads just re-select and re-assert debug, which
+ * is a no-op if the tile is already halted from a prior CALL return. */
+static esp_err_t halt_tile_for_load(xmos_jtag_handle_t h, int tile,
+                                    bool *first_contact)
+{
+    if (*first_contact) {
+        *first_contact = false;
+        return attach_tile_debug(h, tile);
+    }
+    esp_err_t err = mux_select(h, xmos_tile_to_mux(tile));
+    if (err != ESP_OK) return err;
+    return enter_debug(h, tile);
+}
+
 esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
                             const uint8_t *xe_data, size_t xe_len,
                             bool run)
 {
     esp_err_t err;
 
-    /* Parse XE file */
     xe_parsed_t parsed;
     err = xe_parse(xe_data, xe_len, &parsed);
     if (err != ESP_OK) return err;
 
-    if (parsed.num_segments == 0) {
-        ESP_LOGE(TAG, "No loadable segments in XE file");
+    if (parsed.num_steps == 0) {
+        ESP_LOGE(TAG, "No boot steps in XE file");
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Load segments, grouped by tile */
-    for (uint8_t tile = 0; tile < parsed.num_tiles; tile++) {
-        bool has_segments = false;
+    /*
+     * Execute the boot sequence in order (load -> call -> load -> goto).
+     * The setup (CALL) phase configures each tile's clocks/PLL/RAM exactly
+     * as the boot ROM would, then returns to debug; only then is the
+     * application loaded and started.  This mirrors XMOS xrun / tool_axe.
+     */
+    uint32_t cur_entry[XE_MAX_TILES] = {0};
+    bool first_contact = true;
 
-        for (size_t i = 0; i < parsed.num_segments; i++) {
-            if (parsed.segments[i].tile != tile) continue;
-            has_segments = true;
-            break;
-        }
-        if (!has_segments) continue;
+    for (size_t i = 0; i < parsed.num_steps; i++) {
+        const xe_step_t *step = &parsed.steps[i];
 
-        /* Halt this tile (interrupt running core, SRST fallback) */
-        err = attach_tile_debug(h, tile);
-        if (err != ESP_OK) return err;
+        if (step->op == XE_OP_LOAD) {
+            err = halt_tile_for_load(h, step->tile, &first_contact);
+            if (err != ESP_OK) return err;
 
-        /* Write all segments for this tile */
-        for (size_t i = 0; i < parsed.num_segments; i++) {
-            const xe_segment_t *seg = &parsed.segments[i];
-            if (seg->tile != tile) continue;
-
-            if (seg->filesz > 0) {
-                ESP_LOGI(TAG, "Loading tile %d segment: 0x%08lx (%lu bytes)",
-                         tile, (unsigned long)seg->paddr,
-                         (unsigned long)seg->filesz);
-                err = xmos_jtag_mem_write(h, tile, seg->paddr,
-                                          seg->data, seg->filesz);
+            ESP_LOGI(TAG, "Load tile %d (entry 0x%08lx, %u segment(s))",
+                     step->tile, (unsigned long)step->entry, step->seg_count);
+            for (uint16_t s = 0; s < step->seg_count; s++) {
+                err = load_segment(h, &parsed.segments[step->seg_first + s]);
                 if (err != ESP_OK) return err;
             }
-
-            /* Zero-fill BSS (memsz > filesz) */
-            if (seg->memsz > seg->filesz) {
-                uint32_t bss_addr = seg->paddr + seg->filesz;
-                size_t bss_len = seg->memsz - seg->filesz;
-                ESP_LOGD(TAG, "Zeroing BSS: 0x%08lx (%zu bytes)",
-                         (unsigned long)bss_addr, bss_len);
-
-                /* Zero word-by-word */
-                for (size_t off = 0; off < bss_len; off += 4) {
-                    err = dbg_mem_write_word(h, tile, bss_addr + off, 0);
+            if (step->tile < XE_MAX_TILES)
+                cur_entry[step->tile] = step->entry;
+        } else {  /* XE_OP_RUN */
+            if (!run) {
+                ESP_LOGI(TAG, "run=false: leaving tiles halted, skipping start");
+                continue;
+            }
+            /* Resume every tile in the batch first... */
+            for (int t = 0; t < XE_MAX_TILES; t++) {
+                if (!(step->run_mask & (1u << t))) continue;
+                ESP_LOGI(TAG, "%s tile %d at 0x%08lx",
+                         step->run_wait ? "Call" : "Goto", t,
+                         (unsigned long)cur_entry[t]);
+                err = mux_select(h, xmos_tile_to_mux(t));
+                if (err != ESP_OK) return err;
+                err = start_tile(h, t, cur_entry[t]);
+                if (err != ESP_OK) return err;
+            }
+            /* ...then, for CALL, wait for each to return to debug. */
+            if (step->run_wait) {
+                for (int t = 0; t < XE_MAX_TILES; t++) {
+                    if (!(step->run_mask & (1u << t))) continue;
+                    err = wait_debug_reentry(h, t, 3000);
                     if (err != ESP_OK) return err;
                 }
             }
-        }
-
-        if (run && parsed.entry_points[tile] != 0) {
-            err = dbg_setps(h, tile, XMOS_PS_DBG_SPC, parsed.entry_points[tile]);
-            if (err != ESP_OK) return err;
-            err = dbg_setps(h, tile, XMOS_PS_DBG_SSR, 0);
-            if (err != ESP_OK) return err;
-            err = exit_debug(h, tile);
-            if (err != ESP_OK) return err;
-            ESP_LOGI(TAG, "Tile %d: started at 0x%08lx",
-                     tile, (unsigned long)parsed.entry_points[tile]);
         }
     }
 
