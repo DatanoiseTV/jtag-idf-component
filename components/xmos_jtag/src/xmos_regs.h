@@ -70,72 +70,61 @@ static inline uint32_t xmos_tile_to_mux(int tile)
 #define XMOS_TEST_MODE_OTP_SERIAL_EN 0x4
 
 /* =========================================================================
- * Internal TAP chain lengths (when MUX is open)
+ * Mux-open scan geometry (when MUX is open to an xCORE / SSWITCH)
  *
- * Physical order: TDI -> BSCAN -> CHIP -> XCORE -> OTP -> TDO.
- * With LSB-first shifting the first bit shifted ends up in the TAP
- * nearest TDO, so the IR word layout is:
- *   bits [1:0]   OTP, [11:2] XCORE, [15:12] CHIP, [19:16] BSCAN
- * Total IR when mux open: 2 + 10 + 4 + 4 = 20 bits.
- * (sc_jtag scans this as 22 bits with 2 leading don't-care bits that
- *  flush straight through -- equivalent to a 20-bit scan.)
+ * Chain when open: BSCAN(4) + CHIP(4) + XCORE(10) + OTP(2) = 20 IR bits.
+ * sc_jtag, however, ALWAYS scans 22 IR bits / 35 DR bits for mux-open
+ * access -- the two extra MSB IR bits are don't-cares that flush through.
+ * It does NOT build the IR from named fields; it OR's the instruction
+ * into a fixed base word that already carries every bypass.  Matching
+ * those literal words is what makes register access actually land on the
+ * XS2 -- a hand-rolled 20-bit field layout reads IDCODE fine but fails
+ * to enter debug.  Verified bug 2026-06: 20-bit IR -> "failed to enter
+ * debug mode"; 22-bit sc_jtag framing fixes it.
+ *
+ *   chip-TAP IR  = 0x00fc3fff | (chip_cmd << 14)   (SETMUX etc.)
+ *   xCORE-reg IR = 0x00ffc00f | (tap_ir   << 4)
+ *   DR (both)    = 35 bits, shift in (data << N)
  * ======================================================================= */
 #define XMOS_CHIP_TAP_IR_LEN         4
 #define XMOS_XCORE_TAP_IR_LEN        10
 #define XMOS_OTP_TAP_IR_LEN          2
 
-#define XMOS_MUX_TOTAL_IR_LEN        (XMOS_OTP_TAP_IR_LEN + \
-                                       XMOS_XCORE_TAP_IR_LEN + \
-                                       XMOS_CHIP_TAP_IR_LEN + \
-                                       XMOS_BSCAN_IR_LEN)
-/* = 2 + 10 + 4 + 4 = 20 bits */
+#define XMOS_MUX_OPEN_IR_LEN         22          /* sc_jtag mux-open IR scan */
+#define XMOS_MUX_CHAIN_IR_LEN        20          /* actual open chain IR len */
+#define XMOS_MUX_OPEN_DR_LEN         35
+#define XMOS_MUX_OPEN_BYP_LEN        4           /* sc_jtag MUX_XCORE_BYP_LEN */
 
-/* Bypass values */
-#define XMOS_OTP_TAP_BYPASS          0x3    /* 2 bits all-1 */
-#define XMOS_CHIP_TAP_BYPASS         0xF    /* 4 bits all-1 */
+#define XMOS_CHIP_IR_OPEN_BASE       0x00fc3fffu /* | (chip_cmd << 14) */
+#define XMOS_CHIP_IR_OPEN_SHIFT      14
+#define XMOS_XCORE_IR_OPEN_BASE      0x00ffc00fu /* | (tap_ir   << 4)  */
+#define XMOS_XCORE_IR_OPEN_SHIFT     4
 
-/* xCORE TAP IR encoding:
- *   bits [9:2] = register index (8 bits)
- *   bits [1:0] = operation: 0=bypass, 1=read, 2=write */
+/* DR scan for register access (sc_jtag jtag_module_reg_access):
+ *   - 35 DR bits, shift in (data << 1)
+ *   - readback: SSWITCH value = dr_out[31:0]
+ *               xCORE   value = (dr_out >> 1)[31:0] */
+#define XMOS_REG_DR_LEN              35
+
+/* xCORE TAP IR encoding (sc_jtag): bits [9:2] = register, [1:0] = op */
 #define XMOS_REG_OP_BYPASS  0
 #define XMOS_REG_OP_READ    1
 #define XMOS_REG_OP_WRITE   2
 
-/* DR scan for register access, exactly as sc_jtag jtag_module_reg_access:
- *   - always scan 35 bits
- *   - shift in (data << 1)
- *   - readback: SSWITCH value = dr_out[31:0]
- *               xCORE   value = (dr_out >> 1)[31:0]   */
-#define XMOS_REG_DR_LEN              35
-
-/* Total bypass bits with mux open (sc_jtag MUX_XCORE_BYP_LEN) */
-#define XMOS_MUX_TOTAL_BYP_LEN       4
-
 /* =========================================================================
- * Construct the full-chain IR word for a register access
- *
- * Bit layout (LSB-first shifting, so OTP goes first):
- *   bits [1:0]   = OTP IR (bypass = 0x3)
- *   bits [11:2]  = xCORE IR (reg_op)
- *   bits [15:12] = CHIP IR (bypass = 0xF)
- *   bits [19:16] = BSCAN IR (bypass = 0xF)
+ * Construct the mux-open IR word for an xCORE register access.
+ * Mirrors sc_jtag: TapIR = (reg << 2) | op, OR'd into the base at bit 4.
  * ======================================================================= */
 static inline uint32_t xmos_chain_ir_reg_read(uint8_t reg)
 {
-    uint16_t xcore_ir = (uint16_t)((reg << 2) | XMOS_REG_OP_READ);
-    return (uint32_t)XMOS_OTP_TAP_BYPASS
-         | ((uint32_t)xcore_ir << XMOS_OTP_TAP_IR_LEN)
-         | ((uint32_t)XMOS_CHIP_TAP_BYPASS << (XMOS_OTP_TAP_IR_LEN + XMOS_XCORE_TAP_IR_LEN))
-         | ((uint32_t)XMOS_BSCAN_IR_BYPASS << (XMOS_OTP_TAP_IR_LEN + XMOS_XCORE_TAP_IR_LEN + XMOS_CHIP_TAP_IR_LEN));
+    uint32_t tap_ir = ((uint32_t)reg << 2) | XMOS_REG_OP_READ;
+    return XMOS_XCORE_IR_OPEN_BASE | (tap_ir << XMOS_XCORE_IR_OPEN_SHIFT);
 }
 
 static inline uint32_t xmos_chain_ir_reg_write(uint8_t reg)
 {
-    uint16_t xcore_ir = (uint16_t)((reg << 2) | XMOS_REG_OP_WRITE);
-    return (uint32_t)XMOS_OTP_TAP_BYPASS
-         | ((uint32_t)xcore_ir << XMOS_OTP_TAP_IR_LEN)
-         | ((uint32_t)XMOS_CHIP_TAP_BYPASS << (XMOS_OTP_TAP_IR_LEN + XMOS_XCORE_TAP_IR_LEN))
-         | ((uint32_t)XMOS_BSCAN_IR_BYPASS << (XMOS_OTP_TAP_IR_LEN + XMOS_XCORE_TAP_IR_LEN + XMOS_CHIP_TAP_IR_LEN));
+    uint32_t tap_ir = ((uint32_t)reg << 2) | XMOS_REG_OP_WRITE;
+    return XMOS_XCORE_IR_OPEN_BASE | (tap_ir << XMOS_XCORE_IR_OPEN_SHIFT);
 }
 
 /* =========================================================================

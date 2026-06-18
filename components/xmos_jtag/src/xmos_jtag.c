@@ -81,6 +81,7 @@ static esp_err_t shift_dr_val(xmos_jtag_handle_t h, uint64_t val,
 
 /**
  * Execute a chip TAP instruction with a 32-bit DR value.
+ * Mirrors sc_jtag jtag_chip_tap_reg_access() exactly.
  */
 static esp_err_t chip_tap_access(xmos_jtag_handle_t h,
                                  uint32_t command, uint32_t data)
@@ -88,21 +89,16 @@ static esp_err_t chip_tap_access(xmos_jtag_handle_t h,
     esp_err_t err;
 
     if (h->mux_open) {
-        /* Open chain: OTP byp + XCORE byp + CHIP = command + BSCAN byp.
-         * DR = OTP byp(1) + XCORE byp(1) + CHIP DR(32) + BSCAN byp(1)
-         *    = 35 bits, data skips the two TDO-side bypass bits. */
-        uint32_t ir = (uint32_t)XMOS_OTP_TAP_BYPASS
-                    | ((uint32_t)0x3FF << 2)
-                    | (command << 12)
-                    | ((uint32_t)XMOS_BSCAN_IR_BYPASS << 16);
-        err = shift_ir_val(h, ir, XMOS_MUX_TOTAL_IR_LEN);
+        /* Mux open: 22-bit IR (command at [17:14]), 35-bit DR, data << 2 */
+        uint32_t ir = XMOS_CHIP_IR_OPEN_BASE | (command << XMOS_CHIP_IR_OPEN_SHIFT);
+        err = shift_ir_val(h, ir, XMOS_MUX_OPEN_IR_LEN);
         if (err != ESP_OK) return err;
 
-        err = shift_dr_val(h, (uint64_t)data << 2, NULL, 35);
+        err = shift_dr_val(h, (uint64_t)data << 2, NULL, XMOS_MUX_OPEN_DR_LEN);
         if (err != ESP_OK) return err;
     } else {
-        /* Closed chain: CHIP = command (bits [3:0], nearest TDO),
-         * BSCAN bypass (bits [7:4]).  DR = CHIP DR(32) + BSCAN byp(1). */
+        /* Mux closed: 8-bit IR (CHIP=command [3:0], BSCAN bypass [7:4]),
+         * 33-bit DR. */
         uint32_t ir = command | ((uint32_t)XMOS_BSCAN_IR_BYPASS << 4);
         err = shift_ir_val(h, ir, XMOS_CLOSED_IR_LEN);
         if (err != ESP_OK) return err;
@@ -111,13 +107,14 @@ static esp_err_t chip_tap_access(xmos_jtag_handle_t h,
         if (err != ESP_OK) return err;
     }
 
-    /* Return every TAP to BYPASS (sc_jtag does this after each access) */
-    return shift_ir_val(h, 0xFFFFFFFF, XMOS_MUX_TOTAL_IR_LEN);
+    /* Post-access flush: every TAP back to BYPASS (sc_jtag uses a 22-bit
+     * all-ones IR scan here regardless of chain length). */
+    return shift_ir_val(h, 0xFFFFFFFF, XMOS_MUX_OPEN_IR_LEN);
 }
 
 /**
  * Select a MUX target.  After this call, if target != MUX_NC, the
- * JTAG chain includes the full internal chain (20-bit IR).
+ * JTAG chain includes the internal TAPs.
  */
 static esp_err_t mux_select(xmos_jtag_handle_t h, uint32_t target)
 {
@@ -127,14 +124,15 @@ static esp_err_t mux_select(xmos_jtag_handle_t h, uint32_t target)
     h->mux_open = (target != XMOS_MUX_NC);
     h->mux_state = (int)target;
 
-    /* Post-SETMUX flush: bypass IR scan + short DR scan.  sc_jtag carries
-     * this workaround ("TODO -- Find out why this work around is
-     * required!!!") after every MUX change -- keep it, it is part of the
-     * known-good sequence. */
-    err = shift_ir_val(h, 0xFFFFFFFF, XMOS_MUX_TOTAL_IR_LEN);
-    if (err != ESP_OK) return err;
-    err = shift_dr_val(h, 0xF, NULL, XMOS_MUX_TOTAL_BYP_LEN);
-    if (err != ESP_OK) return err;
+    /* When opening to a tile, sc_jtag (conditionally_set_mux_for_chipmodule)
+     * follows SETMUX with a workaround flush: 20-bit all-ones IR + 4-bit DR.
+     * "TODO -- Find out why this work around is required!!!" -- keep it. */
+    if (h->mux_open) {
+        err = shift_ir_val(h, 0xFFFFFFFF, XMOS_MUX_CHAIN_IR_LEN);
+        if (err != ESP_OK) return err;
+        err = shift_dr_val(h, 0xF, NULL, XMOS_MUX_OPEN_BYP_LEN);
+        if (err != ESP_OK) return err;
+    }
 
     /* Allow the MUX to settle */
     h->transport->idle(h->transport, 4);
@@ -143,17 +141,11 @@ static esp_err_t mux_select(xmos_jtag_handle_t h, uint32_t target)
 }
 
 /* =========================================================================
- * Register access through the internal chain
+ * Register access through the internal chain (sc_jtag jtag_module_reg_access)
  *
- * When MUX is open, IR is 20 bits:
- *   [1:0]   OTP    (bypass = 0x3)
- *   [11:2]  XCORE  (reg_op)
- *   [15:12] CHIP   (bypass = 0xF)
- *   [19:16] BSCAN  (bypass = 0xF)
- *
- * DR for xCORE: 33 bits (data << 1), shifted through OTP bypass(1),
- *   CHIP bypass(1), BSCAN bypass(1) = total 36 bits.
- * DR for SSWITCH: 32 bits, total 35 bits.
+ * Mux-open IR is scanned as 22 bits: TapIR = (reg << 2) | op, OR'd into a
+ * fixed base at bit 4.  DR is 35 bits, data shifted in << 1; the readback
+ * is the raw stream for the system switch and (stream >> 1) for an xCORE.
  * ======================================================================= */
 
 static esp_err_t reg_access(xmos_jtag_handle_t h, int tile, uint8_t reg,
@@ -168,27 +160,16 @@ static esp_err_t reg_access(xmos_jtag_handle_t h, int tile, uint8_t reg,
         if (err != ESP_OK) return err;
     }
 
-    /* Build the 20-bit chain IR */
-    uint16_t xcore_ir;
-    if (is_write)
-        xcore_ir = (uint16_t)((reg << 2) | XMOS_REG_OP_WRITE);
-    else
-        xcore_ir = (uint16_t)((reg << 2) | XMOS_REG_OP_READ);
+    uint32_t op = is_write ? XMOS_REG_OP_WRITE : XMOS_REG_OP_READ;
+    uint32_t tap_ir = ((uint32_t)reg << 2) | op;
+    uint32_t ir = XMOS_XCORE_IR_OPEN_BASE | (tap_ir << XMOS_XCORE_IR_OPEN_SHIFT);
 
-    uint32_t chain_ir = (uint32_t)XMOS_OTP_TAP_BYPASS
-                      | ((uint32_t)xcore_ir << 2)
-                      | ((uint32_t)XMOS_CHIP_TAP_BYPASS << 12)
-                      | ((uint32_t)XMOS_BSCAN_IR_BYPASS << 16);
-
-    esp_err_t err = shift_ir_val(h, chain_ir, XMOS_MUX_TOTAL_IR_LEN);
+    esp_err_t err = shift_ir_val(h, ir, XMOS_MUX_OPEN_IR_LEN);
     if (err != ESP_OK) return err;
 
-    /* DR scan -- framing per sc_jtag jtag_module_reg_access/jtag_read_reg:
-     * always 35 bits, shift in (data << 1); readback is the raw stream
-     * for the system switch and (stream >> 1) for an xCORE tile. */
     uint64_t dr_out = 0;
     err = shift_dr_val(h, (uint64_t)wr_val << 1,
-                       rd_val ? &dr_out : NULL, XMOS_REG_DR_LEN);
+                       rd_val ? &dr_out : NULL, XMOS_MUX_OPEN_DR_LEN);
     if (err != ESP_OK) return err;
 
     if (rd_val) {
