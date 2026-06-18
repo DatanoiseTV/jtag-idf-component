@@ -11,7 +11,7 @@ jobs:
     name: Host unit tests (XE parser / protocol)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build and run host tests
         working-directory: test
         run: make test
@@ -24,7 +24,7 @@ jobs:
       matrix:
         target: [esp32, esp32s3, esp32p4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build example for ${{ matrix.target }}
         uses: espressif/esp-idf-ci-action@v1
         with:
