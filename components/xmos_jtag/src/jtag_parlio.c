@@ -167,7 +167,6 @@ static esp_err_t parlio_do_shift(jtag_parlio_ctx_t *ctx, bool is_ir,
     size_t nav_pre = is_ir ? 4 : 3;  /* cycles before first data bit */
     size_t total_cycles = nav_pre + bits + 2;  /* +2 for update+RTI */
     size_t tx_bytes = (total_cycles + 3) / 4;  /* 4 cycles per byte */
-    size_t rx_bytes = (total_cycles + 7) / 8;  /* 8 samples per byte */
 
     if (tx_bytes > ctx->buf_size) {
         ESP_LOGE(TAG, "TX too large: %zu bytes, buf %zu", tx_bytes, ctx->buf_size);

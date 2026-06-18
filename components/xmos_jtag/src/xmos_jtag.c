@@ -1269,14 +1269,19 @@ static void spi_bb_cmd(const xmos_spi_pins_t *p, uint8_t cmd)
     spi_bb_cs(p, 1);
 }
 
-static void spi_bb_wait_ready(const xmos_spi_pins_t *p)
+/* Poll the flash status register until write-in-progress clears.
+ * Bounded: a missing/mis-wired flash would otherwise spin forever. */
+static esp_err_t spi_bb_wait_ready(const xmos_spi_pins_t *p, int timeout_ms)
 {
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
     spi_bb_cs(p, 0);
     spi_bb_xfer(p, SPI_CMD_READ_STATUS);
+    esp_err_t err = ESP_OK;
     while (spi_bb_xfer(p, 0) & SPI_STATUS_WIP) {
-        /* Busy-wait -- flash erase can take up to 400ms per sector */
+        if (esp_timer_get_time() > deadline) { err = ESP_ERR_TIMEOUT; break; }
     }
     spi_bb_cs(p, 1);
+    return err;
 }
 
 esp_err_t xmos_spi_flash_program(xmos_jtag_handle_t h,
@@ -1330,7 +1335,12 @@ esp_err_t xmos_spi_flash_program(xmos_jtag_handle_t h,
         spi_bb_xfer(spi_pins, addr & 0xFF);
         spi_bb_cs(spi_pins, 1);
 
-        spi_bb_wait_ready(spi_pins);
+        /* Sector erase can take ~400ms; allow generous margin */
+        if (spi_bb_wait_ready(spi_pins, 2000) != ESP_OK) {
+            ESP_LOGE(TAG, "Flash erase timed out at 0x%lx", (unsigned long)addr);
+            gpio_set_level(h->pins.srst_n, 1);
+            return ESP_ERR_TIMEOUT;
+        }
 
         if (((addr - erase_start) & 0xFFFF) == 0) {
             ESP_LOGI(TAG, "Erasing: 0x%lx / 0x%lx",
@@ -1357,7 +1367,11 @@ esp_err_t xmos_spi_flash_program(xmos_jtag_handle_t h,
         }
         spi_bb_cs(spi_pins, 1);
 
-        spi_bb_wait_ready(spi_pins);
+        if (spi_bb_wait_ready(spi_pins, 500) != ESP_OK) {
+            ESP_LOGE(TAG, "Flash page write timed out at 0x%lx", (unsigned long)addr);
+            gpio_set_level(h->pins.srst_n, 1);
+            return ESP_ERR_TIMEOUT;
+        }
 
         if ((off & 0xFFFF) == 0) {
             ESP_LOGI(TAG, "Writing: %zu / %zu bytes", off, image_len);

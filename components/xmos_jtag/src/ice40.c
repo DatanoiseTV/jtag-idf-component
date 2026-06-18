@@ -8,6 +8,7 @@
 #include "jtag_ice40.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 #include <string.h>
 
@@ -112,12 +113,19 @@ static uint8_t spi_xfer_byte(const ice40_pins_t *p, uint8_t out)
 static void flash_cs_low(const ice40_pins_t *p) { gpio_set_level(p->spi_cs, 0); }
 static void flash_cs_high(const ice40_pins_t *p) { gpio_set_level(p->spi_cs, 1); }
 
-static void flash_wait_ready(const ice40_pins_t *p)
+/* Bounded poll of the flash status register (a missing flash would
+ * otherwise spin forever). Returns false on timeout. */
+static bool flash_wait_ready(const ice40_pins_t *p, int timeout_ms)
 {
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    bool ok = true;
     flash_cs_low(p);
     spi_xfer_byte(p, FLASH_CMD_READ_STATUS);
-    while (spi_xfer_byte(p, 0) & FLASH_STATUS_WIP) {}
+    while (spi_xfer_byte(p, 0) & FLASH_STATUS_WIP) {
+        if (esp_timer_get_time() > deadline) { ok = false; break; }
+    }
     flash_cs_high(p);
+    return ok;
 }
 
 /* -------------------------------------------------------------------------
@@ -219,7 +227,11 @@ esp_err_t ice40_program_flash(const ice40_pins_t *pins,
         spi_xfer_byte(pins, (addr >> 8) & 0xFF);
         spi_xfer_byte(pins, addr & 0xFF);
         flash_cs_high(pins);
-        flash_wait_ready(pins);
+        if (!flash_wait_ready(pins, 2000)) {
+            ESP_LOGE(TAG, "Flash erase timed out at 0x%lx", (unsigned long)addr);
+            gpio_set_level(pins->creset, 1);
+            return ESP_ERR_TIMEOUT;
+        }
     }
 
     /* Program pages (256 bytes each) */
@@ -237,7 +249,11 @@ esp_err_t ice40_program_flash(const ice40_pins_t *pins,
         for (size_t i = 0; i < page_len; i++)
             spi_xfer_byte(pins, bitstream[off + i]);
         flash_cs_high(pins);
-        flash_wait_ready(pins);
+        if (!flash_wait_ready(pins, 500)) {
+            ESP_LOGE(TAG, "Flash page write timed out at 0x%lx", (unsigned long)addr);
+            gpio_set_level(pins->creset, 1);
+            return ESP_ERR_TIMEOUT;
+        }
 
         if ((off & 0xFFFF) == 0 && off > 0)
             ESP_LOGI(TAG, "Flash: %zu / %zu bytes", off, length);
