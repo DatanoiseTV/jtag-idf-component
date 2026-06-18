@@ -6,19 +6,39 @@
  * ESP32 side. It polls the PSWITCH debug scratch mailbox, programs the QSPI
  * boot flash with the streamed boot image, and reports status.
  *
+ * ONE stub for the whole family -- the QSPI boot ports are the same on
+ * every part, so this builds for all of them by just selecting the arch:
+ *
+ *   Part            Arch    Build target / -march   Flash
+ *   --------------  ------  ----------------------  -------------------
+ *   XU208           xs2a    xcore-200               external QSPI
+ *   XUF208 / XUF216 xs2a    xcore-200               internal (same ports)
+ *   XU316           xs3a    xcore.ai                external QSPI
+ *
+ * (There is no XUF316 -- xcore.ai is external-flash only; the "UF" internal-
+ * flash suffix exists only on xCORE-200/XS2. Internal flash on XUF parts is
+ * transparent QSPI on the SAME ports, so nothing changes here.)
+ *
  * Flash access uses the QSPI driver from XMOS's permissively-licensed
  * xcore/sc_flash (module_quad_spi_flash). Drop that module's
  * quad_spi_flash.{xc,h} next to this file (or add it to USED_MODULES).
  *
- * TWO THINGS MUST BE CONFIRMED FOR YOUR TARGET before this runs:
- *   1. The QSPI port map (quad_spi_ports below) -- the values here are the
- *      xCORE-200 hardware boot ports (CS=X0D01, SCLK=X0D10, SIO=X0D04..07).
- *   2. The mailbox access. The host writes the PSWITCH debug scratch
+ * THINGS TO CONFIRM FOR YOUR TARGET before this runs:
+ *   1. The mailbox access. The host writes the PSWITCH debug scratch
  *      registers (0x20..0x23) over JTAG; this stub must read/write the SAME
  *      registers from the running tile. getps/setps is used below; verify
  *      the register space against your tools (xs1.h / the XS1 architecture
  *      manual) -- this is the one part that cannot be checked without the
  *      toolchain.
+ *   2. On xcore.ai (XS3) ONLY: the sc_flash low-level driver's read sample
+ *      point was hand-tuned for XS2's port/ref clock. It compiles for xs3a
+ *      but the timing must be re-validated on silicon. Keep SCLK
+ *      conservative (<= ~25 MHz, libquadflash's default class) -- erase/
+ *      page-program timing is forgiving; only fast reads need the
+ *      data-eye calibration that lib_qspi_fast_read does. Slow the divider
+ *      in quad_spi_flash_init() if reads come back wrong on XS3.
+ *      (Ports are identical to XS2: CS=1B, SCLK=1C, SIO=4B -- verified
+ *      against XMOS's xcore.ai audio-board XN files.)
  */
 
 #include <xs1.h>
@@ -46,7 +66,9 @@
  * linker so it does not overlap this program. */
 #define DATA_BUF_ADDR  0x00050000
 
-/* QSPI boot ports for xCORE-200 (AN00185 §2.3 / XU208 datasheet §8.1). */
+/* QSPI boot ports -- IDENTICAL on xCORE-200 (XU208/XUF208/XUF216) and
+ * xcore.ai (XU316): AN00185 §2.3 / XU208 §8.1 / XU316 boot section, and
+ * confirmed against XMOS's xk-audio-316-mc XN. Flash is always on tile[0]. */
 on tile[0]: quad_spi_ports qspi = {
     XS1_PORT_1B,   /* CS   = X0D01 */
     XS1_PORT_1C,   /* SCLK = X0D10 */

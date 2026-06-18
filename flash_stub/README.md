@@ -17,11 +17,38 @@ program into the xCORE's RAM, run it, and stream flash data to it).
 
 ## Why a stub is needed
 
-The XU208 boot flash is wired to the xCORE's QSPI port, not to the ESP32.
-To write it "via the XMOS" the chip must drive its own flash pins, so a
+The boot flash is wired to the xCORE's QSPI port, not to the ESP32. To
+write it "via the XMOS" the chip must drive its own flash pins, so a
 program has to run on the xCORE. That program is what `xflash` injects;
 here we load an equivalent program and talk to it through the debug
-scratch-register mailbox.
+scratch-register mailbox. For **XUF** parts (internal/embedded flash)
+this is the *only* way to write the flash — there is no external chip to
+clip onto.
+
+## Supported parts (one stub, same ports)
+
+The QSPI boot ports are identical across the whole family, so a single
+stub source covers every part — only the build architecture changes:
+
+| Part(s)            | Arch  | Build target | Flash         |
+|--------------------|-------|--------------|---------------|
+| XU208              | xs2a  | xcore-200    | external QSPI |
+| XUF208, XUF216     | xs2a  | xcore-200    | internal QSPI |
+| XU316 (xcore.ai)   | xs3a  | xcore.ai     | external QSPI |
+
+Ports (all parts): `CS = XS1_PORT_1B`, `SCLK = XS1_PORT_1C`,
+`SIO = XS1_PORT_4B`, flash on `tile[0]` — verified against XMOS's
+`xk-audio-316-mc` (xcore.ai) and XUF216 board XN files.
+
+> There is **no XUF316**. xcore.ai/XS3 is external-flash only; the "UF"
+> internal-flash suffix exists only on xCORE-200/XS2 (XUF208/XUF216/
+> XEF216). Don't look for one.
+
+**xcore.ai (XS3) caveat:** the low-level QSPI driver's read sample point
+was tuned for XS2's clocking. It compiles for `xs3a`, but keep `SCLK`
+conservative (≈25 MHz — `libquadflash`'s default class) and re-validate
+reads on silicon; erase/program timing is forgiving, only high-speed
+reads need the `lib_qspi_fast_read` calibration dance (not used here).
 
 ## Host <-> stub protocol (authoritative)
 
@@ -57,19 +84,40 @@ the container. Write from flash offset 0.
 
 ## Building (with the XMOS XTC tools)
 
+Put the `sc_flash` `module_quad_spi_flash/src/quad_spi_flash.{xc,h}` next
+to this file (or add the module to `USED_MODULES`), supply an XN for your
+board, then build for the matching architecture:
+
 ```sh
-# Provide an XN file describing your board's QSPI flash ports, then:
-xcc flash_stub.xc -target=XCORE-200-EXPLORER -lquadflash -o flash_stub.xe
-# (use the XN that matches your target's PORT_SQI_* assignment)
+# xCORE-200 (XU208 / XUF208 / XUF216)
+xcc flash_stub.xc quad_spi_flash.xc -target=XCORE-200-EXPLORER -o flash_stub_xs2.xe
+
+# xcore.ai (XU316)
+xcc flash_stub.xc quad_spi_flash.xc -target=XCORE-AI-EXPLORER  -o flash_stub_xs3.xe
 ```
 
-Then embed `flash_stub.xe` (e.g. via `target_add_binary_data` / an
-`EMBED_FILES` entry) and pass its bytes to `xmos_jtag_program_flash()`.
+(Use the XN that matches your board's `PORT_SQI_*` assignment; the
+defaults above are the standard `CS=1B / SCLK=1C / SIO=4B` map.) Then
+embed the resulting `.xe` (e.g. via `EMBED_FILES`) and pass its bytes to
+`xmos_jtag_program_flash()` — it loads the same way regardless of arch.
 
 ## Open-source reference
 
 The flash command sequences and QSPI driver come from XMOS's
 permissively-licensed `xcore/sc_flash`
 (`module_quad_spi_flash/src/quad_spi_flash.xc`,
-`module_flash/specs/*.spispec`). `libquadflash` (shipped with the tools)
-exposes the same `fl_*` API used below.
+`module_flash/specs/*.spispec`). `libquadflash` (shipped with the tools,
+built for both `xs2a` and `xs3a`) exposes the higher-level `fl_*` API; we
+use the low-level driver here because writing a complete pre-built boot
+image to flash offset 0 needs raw sector-erase / page-program access,
+which the image-oriented `fl_*` API does not expose.
+
+## Note on the boot image / IDCODE
+
+- The bytes written must be a complete boot image (`xflash -o`), stored
+  with the tools-15.x **per-word nibble-swap** encoding — that's part of
+  the image `xflash` emits, so writing its `-o` output verbatim is
+  correct; don't re-order bytes yourself.
+- XU316's JTAG IDCODE is documented as `0x...6633` but, like XU208
+  (documented `6633`, silicon `5633`), the real value must be confirmed on
+  hardware — the host's detection table treats the XS3 ID as unverified.
