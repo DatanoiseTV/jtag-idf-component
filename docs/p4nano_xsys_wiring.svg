@@ -1,0 +1,222 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 968" font-family="'SF Mono','Cascadia Code',Consolas,monospace">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FBFBFD"/><stop offset="100%" stop-color="#EEF0F3"/></linearGradient>
+<filter id="sh" x="-6%" y="-12%" width="112%" height="130%"><feDropShadow dx="0.5" dy="1" stdDeviation="1.2" flood-color="#00000022"/></filter>
+</defs>
+<rect width="1000" height="968" fill="url(#bg)"/>
+<text x="500.0" y="40" text-anchor="middle" font-size="22" font-weight="800" fill="#222">ESP32-P4-NANO  &#8596;  XMOS xSYS  —  JTAG wiring</text>
+<text x="500.0" y="64" text-anchor="middle" font-size="12.5" fill="#555">5 signals + GND.  XMOS JTAG is 3.3 V — wire straight through, no level shifter.</text>
+<text x="154.0" y="86" text-anchor="middle" font-size="13" font-weight="700" fill="#333">ESP32-P4-NANO</text>
+<text x="846.0" y="86" text-anchor="middle" font-size="13" font-weight="700" fill="#333">XMOS xSYS (20-pin)</text>
+<path d="M238 127.0 C500.0 127.0 500.0 127.0 762 127.0" fill="none" stroke="#E67E22" stroke-width="3.2" opacity="0.9"/>
+<circle cx="238" cy="127.0" r="3.4" fill="#E67E22"/>
+<circle cx="762" cy="127.0" r="3.4" fill="#E67E22"/>
+<rect x="70" y="104" width="168" height="46" rx="5" fill="#E67E22" stroke="#b3611a" stroke-width="1" filter="url(#sh)"/>
+<text x="154.0" y="123.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">GPIO46  ·  TDI</text>
+<text x="154.0" y="138.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">right header · row 9 inner</text>
+<rect x="762" y="104" width="168" height="46" rx="5" fill="#E67E22" stroke="#b3611a" stroke-width="1" filter="url(#sh)"/>
+<text x="846.0" y="123.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">pin 5  ·  TDSRC</text>
+<text x="846.0" y="138.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">odd row, left col</text>
+<text x="500.0" y="120.0" text-anchor="middle" font-size="10.5" font-weight="700" fill="#b3611a">TDI</text>
+<path d="M238 187.0 C500.0 187.0 500.0 187.0 762 187.0" fill="none" stroke="#27AE60" stroke-width="3.2" opacity="0.9"/>
+<circle cx="238" cy="187.0" r="3.4" fill="#27AE60"/>
+<circle cx="762" cy="187.0" r="3.4" fill="#27AE60"/>
+<rect x="70" y="164" width="168" height="46" rx="5" fill="#27AE60" stroke="#1d8049" stroke-width="1" filter="url(#sh)"/>
+<text x="154.0" y="183.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">GPIO48  ·  TMS</text>
+<text x="154.0" y="198.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">right header · row 8 outer</text>
+<rect x="762" y="164" width="168" height="46" rx="5" fill="#27AE60" stroke="#1d8049" stroke-width="1" filter="url(#sh)"/>
+<text x="846.0" y="183.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">pin 7  ·  TMS</text>
+<text x="846.0" y="198.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">odd row, left col</text>
+<text x="500.0" y="180.0" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1d8049">TMS</text>
+<path d="M238 247.0 C500.0 247.0 500.0 247.0 762 247.0" fill="none" stroke="#2E86DE" stroke-width="3.2" opacity="0.9"/>
+<circle cx="238" cy="247.0" r="3.4" fill="#2E86DE"/>
+<circle cx="762" cy="247.0" r="3.4" fill="#2E86DE"/>
+<rect x="70" y="224" width="168" height="46" rx="5" fill="#2E86DE" stroke="#2167ad" stroke-width="1" filter="url(#sh)"/>
+<text x="154.0" y="243.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">GPIO47  ·  TCK</text>
+<text x="154.0" y="258.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">right header · row 8 inner</text>
+<rect x="762" y="224" width="168" height="46" rx="5" fill="#2E86DE" stroke="#2167ad" stroke-width="1" filter="url(#sh)"/>
+<text x="846.0" y="243.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">pin 9  ·  TCK</text>
+<text x="846.0" y="258.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">odd row, left col</text>
+<text x="500.0" y="240.0" text-anchor="middle" font-size="10.5" font-weight="700" fill="#2167ad">TCK</text>
+<path d="M238 307.0 C500.0 307.0 500.0 307.0 762 307.0" fill="none" stroke="#8E44AD" stroke-width="3.2" opacity="0.9"/>
+<circle cx="238" cy="307.0" r="3.4" fill="#8E44AD"/>
+<circle cx="762" cy="307.0" r="3.4" fill="#8E44AD"/>
+<rect x="70" y="284" width="168" height="46" rx="5" fill="#8E44AD" stroke="#6d3486" stroke-width="1" filter="url(#sh)"/>
+<text x="154.0" y="303.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">GPIO45  ·  TDO</text>
+<text x="154.0" y="318.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">right header · row 10 inner</text>
+<rect x="762" y="284" width="168" height="46" rx="5" fill="#8E44AD" stroke="#6d3486" stroke-width="1" filter="url(#sh)"/>
+<text x="846.0" y="303.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">pin 13  ·  TDSNK</text>
+<text x="846.0" y="318.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">odd row, left col</text>
+<text x="500.0" y="300.0" text-anchor="middle" font-size="10.5" font-weight="700" fill="#6d3486">TDO</text>
+<path d="M238 367.0 C500.0 367.0 500.0 367.0 762 367.0" fill="none" stroke="#E74C3C" stroke-width="3.2" opacity="0.9"/>
+<circle cx="238" cy="367.0" r="3.4" fill="#E74C3C"/>
+<circle cx="762" cy="367.0" r="3.4" fill="#E74C3C"/>
+<rect x="70" y="344" width="168" height="46" rx="5" fill="#E74C3C" stroke="#b5392d" stroke-width="1" filter="url(#sh)"/>
+<text x="154.0" y="363.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">GPIO54  ·  SRST</text>
+<text x="154.0" y="378.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">right header · row 7 inner</text>
+<rect x="762" y="344" width="168" height="46" rx="5" fill="#E74C3C" stroke="#b5392d" stroke-width="1" filter="url(#sh)"/>
+<text x="846.0" y="363.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">pin 15  ·  RST_N</text>
+<text x="846.0" y="378.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">odd row, left col</text>
+<text x="500.0" y="360.0" text-anchor="middle" font-size="10.5" font-weight="700" fill="#b5392d">SRST</text>
+<path d="M238 427.0 C500.0 427.0 500.0 427.0 762 427.0" fill="none" stroke="#566573" stroke-width="3.2" opacity="0.9"/>
+<circle cx="238" cy="427.0" r="3.4" fill="#566573"/>
+<circle cx="762" cy="427.0" r="3.4" fill="#566573"/>
+<rect x="70" y="404" width="168" height="46" rx="5" fill="#566573" stroke="#3d4750" stroke-width="1" filter="url(#sh)"/>
+<text x="154.0" y="423.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">GND  ·  GND</text>
+<text x="154.0" y="438.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">any GND pin</text>
+<rect x="762" y="404" width="168" height="46" rx="5" fill="#566573" stroke="#3d4750" stroke-width="1" filter="url(#sh)"/>
+<text x="846.0" y="423.32" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">pin 4  ·  GND</text>
+<text x="846.0" y="438.96" text-anchor="middle" font-size="8.5" fill="#FFF" opacity="0.92">any: 4/8/12/16/20</text>
+<text x="500.0" y="420.0" text-anchor="middle" font-size="10.5" font-weight="700" fill="#3d4750">GND</text>
+<path d="M238 487.0 C500.0 487.0 500.0 487.0 762 487.0" fill="none" stroke="#16A085" stroke-width="2.6" stroke-dasharray="6 4" opacity="0.85"/>
+<rect x="70" y="464" width="168" height="46" rx="5" fill="#fff" stroke="#16A085" stroke-width="1" filter="url(#sh)"/>
+<text x="154.0" y="483.32" text-anchor="middle" font-size="12" font-weight="700" fill="#107b66">spare GPIO</text>
+<text x="154.0" y="498.96" text-anchor="middle" font-size="8.5" fill="#107b66" opacity="0.92">or tie to GND</text>
+<rect x="762" y="464" width="168" height="46" rx="5" fill="#fff" stroke="#16A085" stroke-width="1" filter="url(#sh)"/>
+<text x="846.0" y="483.32" text-anchor="middle" font-size="12" font-weight="700" fill="#107b66">pin 3 · MSEL</text>
+<text x="846.0" y="498.96" text-anchor="middle" font-size="8.5" fill="#107b66" opacity="0.92">tie LOW = boot-from-JTAG</text>
+<text x="500.0" y="480.0" text-anchor="middle" font-size="10" font-weight="700" fill="#107b66">MSEL (optional)</text>
+<text x="160" y="554" text-anchor="middle" font-size="12.5" font-weight="700" fill="#333">P4-NANO — right header (inner | outer)</text>
+<rect x="66" y="560" width="182" height="306" rx="7" fill="#23272b" filter="url(#sh)"/>
+<rect x="76" y="570" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="582.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">5V</text>
+<rect x="160" y="570" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="582.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">LDO_VO4</text>
+<text x="58" y="582.0" text-anchor="end" font-size="7.5" fill="#888">1</text>
+<rect x="76" y="592" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="604.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<rect x="160" y="592" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="604.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<text x="58" y="604.0" text-anchor="end" font-size="7.5" fill="#888">2</text>
+<rect x="76" y="614" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="626.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">3V3</text>
+<rect x="160" y="614" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="626.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">GPIO0</text>
+<text x="58" y="626.0" text-anchor="end" font-size="7.5" fill="#888">3</text>
+<rect x="76" y="636" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="648.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<rect x="160" y="636" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="648.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">GPIO1</text>
+<text x="58" y="648.0" text-anchor="end" font-size="7.5" fill="#888">4</text>
+<rect x="76" y="658" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="670.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">GPIO3</text>
+<rect x="160" y="658" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="670.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<text x="58" y="670.0" text-anchor="end" font-size="7.5" fill="#888">5</text>
+<rect x="76" y="680" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="692.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">GPIO2</text>
+<rect x="160" y="680" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="692.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">GPIO6</text>
+<text x="58" y="692.0" text-anchor="end" font-size="7.5" fill="#888">6</text>
+<rect x="76" y="702" width="78" height="18" rx="3.5" fill="#E74C3C" stroke="#0008" stroke-width="0.6"/>
+<text x="115.0" y="714.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">GPIO54</text>
+<text x="115.0" y="728" text-anchor="middle" font-size="7.5" font-weight="700" fill="#E74C3C">SRST</text>
+<rect x="160" y="702" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="714.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">GPIO53</text>
+<text x="58" y="714.0" text-anchor="end" font-size="7.5" fill="#888">7</text>
+<rect x="76" y="724" width="78" height="18" rx="3.5" fill="#2E86DE" stroke="#0008" stroke-width="0.6"/>
+<text x="115.0" y="736.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">GPIO47</text>
+<text x="115.0" y="750" text-anchor="middle" font-size="7.5" font-weight="700" fill="#2E86DE">TCK</text>
+<rect x="160" y="724" width="78" height="18" rx="3.5" fill="#27AE60" stroke="#0008" stroke-width="0.6"/>
+<text x="199.0" y="736.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">GPIO48</text>
+<text x="199.0" y="750" text-anchor="middle" font-size="7.5" font-weight="700" fill="#27AE60">TMS</text>
+<text x="58" y="736.0" text-anchor="end" font-size="7.5" fill="#888">8</text>
+<rect x="76" y="746" width="78" height="18" rx="3.5" fill="#E67E22" stroke="#0008" stroke-width="0.6"/>
+<text x="115.0" y="758.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">GPIO46</text>
+<text x="115.0" y="772" text-anchor="middle" font-size="7.5" font-weight="700" fill="#E67E22">TDI</text>
+<rect x="160" y="746" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="758.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<text x="58" y="758.0" text-anchor="end" font-size="7.5" fill="#888">9</text>
+<rect x="76" y="768" width="78" height="18" rx="3.5" fill="#8E44AD" stroke="#0008" stroke-width="0.6"/>
+<text x="115.0" y="780.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">GPIO45</text>
+<text x="115.0" y="794" text-anchor="middle" font-size="7.5" font-weight="700" fill="#8E44AD">TDO</text>
+<rect x="160" y="768" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="780.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">C6_RXD</text>
+<text x="58" y="780.0" text-anchor="end" font-size="7.5" fill="#888">10</text>
+<rect x="76" y="790" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="802.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">C6_IO12</text>
+<rect x="160" y="790" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="802.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">C6_TXD</text>
+<text x="58" y="802.0" text-anchor="end" font-size="7.5" fill="#888">11</text>
+<rect x="76" y="812" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="824.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">C6_IO13</text>
+<rect x="160" y="812" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="824.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">C6_IO9</text>
+<text x="58" y="824.0" text-anchor="end" font-size="7.5" fill="#888">12</text>
+<rect x="76" y="834" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="115.0" y="846.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<rect x="160" y="834" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="199.0" y="846.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<text x="58" y="846.0" text-anchor="end" font-size="7.5" fill="#888">13</text>
+<text x="157.0" y="884" text-anchor="middle" font-size="9" fill="#666">GPIO53 = TRST (unused).   C6_* = WiFi co-proc, skip.</text>
+<text x="730" y="554" text-anchor="middle" font-size="12.5" font-weight="700" fill="#333">xSYS 20-pin (odd | even)</text>
+<rect x="636" y="560" width="182" height="240" rx="7" fill="#23272b" filter="url(#sh)"/>
+<rect x="646" y="570" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="685.0" y="582.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">5V</text>
+<rect x="730" y="570" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="582.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">NC</text>
+<rect x="646" y="592" width="78" height="18" rx="3.5" fill="#16A085" stroke="#0008" stroke-width="0.6"/>
+<text x="685.0" y="604.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">MSEL</text>
+<text x="685.0" y="618" text-anchor="middle" font-size="7.5" font-weight="700" fill="#16A085">opt</text>
+<rect x="730" y="592" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="604.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<rect x="646" y="614" width="78" height="18" rx="3.5" fill="#E67E22" stroke="#0008" stroke-width="0.6"/>
+<text x="685.0" y="626.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">TDSRC</text>
+<text x="685.0" y="640" text-anchor="middle" font-size="7.5" font-weight="700" fill="#E67E22">=TDI</text>
+<rect x="730" y="614" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="626.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">XL1_UP1</text>
+<rect x="646" y="636" width="78" height="18" rx="3.5" fill="#27AE60" stroke="#0008" stroke-width="0.6"/>
+<text x="685.0" y="648.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">TMS</text>
+<text x="685.0" y="662" text-anchor="middle" font-size="7.5" font-weight="700" fill="#27AE60">TMS</text>
+<rect x="730" y="636" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="648.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<rect x="646" y="658" width="78" height="18" rx="3.5" fill="#2E86DE" stroke="#0008" stroke-width="0.6"/>
+<text x="685.0" y="670.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">TCK</text>
+<text x="685.0" y="684" text-anchor="middle" font-size="7.5" font-weight="700" fill="#2E86DE">TCK</text>
+<rect x="730" y="658" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="670.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">XL1_UP0</text>
+<rect x="646" y="680" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="685.0" y="692.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">DEBUG</text>
+<rect x="730" y="680" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="692.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<rect x="646" y="702" width="78" height="18" rx="3.5" fill="#8E44AD" stroke="#0008" stroke-width="0.6"/>
+<text x="685.0" y="714.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">TDSNK</text>
+<text x="685.0" y="728" text-anchor="middle" font-size="7.5" font-weight="700" fill="#8E44AD">=TDO</text>
+<rect x="730" y="702" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="714.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">XL1_DN0</text>
+<rect x="646" y="724" width="78" height="18" rx="3.5" fill="#E74C3C" stroke="#0008" stroke-width="0.6"/>
+<text x="685.0" y="736.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff">RST_N</text>
+<text x="685.0" y="750" text-anchor="middle" font-size="7.5" font-weight="700" fill="#E74C3C">SRST</text>
+<rect x="730" y="724" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="736.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<rect x="646" y="746" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="685.0" y="758.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">UART_RX</text>
+<rect x="730" y="746" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="758.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">XL1_DN1</text>
+<rect x="646" y="768" width="78" height="18" rx="3.5" fill="#4a525a" stroke="#0006" stroke-width="0.6"/>
+<text x="685.0" y="780.5" text-anchor="middle" font-size="8.5" font-weight="500" fill="#aab2b9">UART_TX</text>
+<rect x="730" y="768" width="78" height="18" rx="3.5" fill="#3a4147" stroke="#0006" stroke-width="0.6"/>
+<text x="769.0" y="780.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#cfd6dc">GND</text>
+<text x="727.0" y="818" text-anchor="middle" font-size="9" fill="#666">Odd pins left col, even right.  GND = any of 4/8/12/16/20.</text>
+<text x="628" y="582.0" text-anchor="end" font-size="7.5" fill="#888">1</text>
+<text x="822" y="582.0" text-anchor="start" font-size="7.5" fill="#888">2</text>
+<text x="628" y="604.0" text-anchor="end" font-size="7.5" fill="#888">3</text>
+<text x="822" y="604.0" text-anchor="start" font-size="7.5" fill="#888">4</text>
+<text x="628" y="626.0" text-anchor="end" font-size="7.5" fill="#888">5</text>
+<text x="822" y="626.0" text-anchor="start" font-size="7.5" fill="#888">6</text>
+<text x="628" y="648.0" text-anchor="end" font-size="7.5" fill="#888">7</text>
+<text x="822" y="648.0" text-anchor="start" font-size="7.5" fill="#888">8</text>
+<text x="628" y="670.0" text-anchor="end" font-size="7.5" fill="#888">9</text>
+<text x="822" y="670.0" text-anchor="start" font-size="7.5" fill="#888">10</text>
+<text x="628" y="692.0" text-anchor="end" font-size="7.5" fill="#888">11</text>
+<text x="822" y="692.0" text-anchor="start" font-size="7.5" fill="#888">12</text>
+<text x="628" y="714.0" text-anchor="end" font-size="7.5" fill="#888">13</text>
+<text x="822" y="714.0" text-anchor="start" font-size="7.5" fill="#888">14</text>
+<text x="628" y="736.0" text-anchor="end" font-size="7.5" fill="#888">15</text>
+<text x="822" y="736.0" text-anchor="start" font-size="7.5" fill="#888">16</text>
+<text x="628" y="758.0" text-anchor="end" font-size="7.5" fill="#888">17</text>
+<text x="822" y="758.0" text-anchor="start" font-size="7.5" fill="#888">18</text>
+<text x="628" y="780.0" text-anchor="end" font-size="7.5" fill="#888">19</text>
+<text x="822" y="780.0" text-anchor="start" font-size="7.5" fill="#888">20</text>
+<text x="500.0" y="952" text-anchor="middle" font-size="11" fill="#444">TDSRC = TDI (host&#8594;target),  TDSNK = TDO (target&#8594;host).  xSYS has no TRST — leave the ESP32 TRST pin unconnected.</text>
+</svg>

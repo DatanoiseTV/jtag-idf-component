@@ -279,6 +279,13 @@ XMOS dev boards and most XMOS audio products expose a 20-pin **xSYS** IDC
 header (the connector the xTAG debugger plugs into). The naming in the
 xTAG/xSYS manual is the confusing part, so here it is decoded.
 
+<img src="docs/p4nano_xsys_wiring.svg" alt="ESP32-P4-NANO to XMOS xSYS JTAG wiring map" />
+
+*(Wiring map: ESP32-P4-NANO GPIOs ↔ xSYS pins, with both connectors' pin
+positions. Verify your target actually has a 20-pin xSYS — compact products
+may instead use test pads or a TC2050 footprint, in which case map to the
+same signals on that footprint.)*
+
 **The one thing that trips everyone up:** XMOS calls the JTAG data lines
 **TDSRC** and **TDSNK** (data *source* / *sink*), not TDI/TDO:
 
