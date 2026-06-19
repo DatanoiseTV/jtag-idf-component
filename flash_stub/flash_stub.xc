@@ -105,12 +105,23 @@ int main(void)
         } else if (cmd == CMD_WRITE) {
             unsigned nbytes = mbox_get(DBG_ARG1);
             unsigned nwords = (nbytes + 3) >> 2;
-            /* Copy the chunk the host placed in the shared buffer. */
+            /* quad_spi_flash_write_page() (the only write primitive this
+             * version of sc_flash actually implements -- there is no
+             * write_sub_page in quad_spi_flash.xc) always writes a full
+             * 64-word/256-byte page. Pad any short final chunk with the
+             * flash's erased-state value (0xFFFFFFFF) so a sub-page write
+             * doesn't clobber already-written bytes beyond nbytes -- the
+             * host's chunking must still align each WRITE to a page
+             * boundary (offset a multiple of 256 within the image). */
             unsigned buf[QUAD_SPI_FLASH_BYTES_PER_PAGE / 4];
-            unsigned * unsafe src = (unsigned * unsafe)DATA_BUF_ADDR;
-            for (unsigned i = 0; i < nwords; i++)
-                buf[i] = src[i];
-            quad_spi_flash_write_sub_page(qspi, addr, buf, nwords);
+            for (unsigned i = 0; i < QUAD_SPI_FLASH_BYTES_PER_PAGE / 4; i++)
+                buf[i] = QUAD_SPI_FLASH_ERASED;
+            unsafe {
+                unsigned * unsafe src = (unsigned * unsafe)DATA_BUF_ADDR;
+                for (unsigned i = 0; i < nwords; i++)
+                    buf[i] = src[i];
+            }
+            quad_spi_flash_write_page(qspi, addr, buf);
             quad_spi_wait_until_idle(qspi);
             mbox_set(DBG_COMMAND, CMD_NONE);
             mbox_set(DBG_STATUS,  ST_OK);

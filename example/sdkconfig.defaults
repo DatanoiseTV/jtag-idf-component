@@ -4,3 +4,10 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 # Use PSRAM for large firmware buffer if available
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+
+# 2 MB app partition (needs >= 4 MB flash): the embedded XMOS flash stubs
+# (~235 KB, XS2 + XS3) plus the WiFi stack exceed the default 1 MB app
+# partition on esp32.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

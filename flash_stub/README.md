@@ -5,15 +5,24 @@ This directory holds the **on-chip flash programmer** used by
 QSPI/SPI flash over JTAG — the same approach `xflash` uses (load a small
 program into the xCORE's RAM, run it, and stream flash data to it).
 
-> **Status: reference implementation, not prebuilt.** The component cannot
-> ship a binary because building an xCORE program requires the XMOS
-> toolchain (`xcc`). `flash_stub.xc` is a correct-by-construction reference
-> against the documented `libquadflash` API and the host protocol below;
-> it must be compiled and validated on hardware. Until a stub is supplied,
-> `xmos_jtag_program_flash()` returns `ESP_ERR_NOT_SUPPORTED`. If you only
-> need to recover a device and can reach the flash chip's pins, the
-> **direct-SPI** path (`xmos_spi_flash_program()`, fully implemented) is
-> simpler — see the component README.
+> **Status: compiled stubs are embedded in the example, pending on-silicon
+> validation.** Building an xCORE program needs the XMOS toolchain (`xcc`),
+> so the component itself ships no binary, but the example app
+> (`example/main/`) now embeds prebuilt `flash_stub_xs2.xe` and
+> `flash_stub_xs3.xe` and drives them from the "Write Flash" action when an
+> XMOS device is detected. The stub is correct-by-construction against the
+> documented `libquadflash` API and the host protocol below; the one part
+> that can only be confirmed on hardware is whether the running core's
+> `getps`/`setps` alias the same PSWITCH scratch registers the host writes
+> over JTAG. If you only need to recover a device and can reach the flash
+> chip's pins, the **direct-SPI** path (`xmos_spi_flash_program()`, fully
+> implemented) is simpler — see the component README.
+>
+> **Page alignment is required.** This stub's only write primitive is
+> `quad_spi_flash_write_page()` (full 256-byte page), so every `WRITE` must
+> target a page-aligned flash offset; `xmos_jtag_program_flash()` already
+> chunks the image on 256-byte boundaries and the stub pads any short final
+> chunk with `0xFF`.
 
 ## Why a stub is needed
 

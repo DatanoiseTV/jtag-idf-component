@@ -147,6 +147,14 @@ static char s_flash_status[128] = "Idle";
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
 
+/* JTAG flash-programmer stubs (compiled with the XMOS toolchain).  Loaded
+ * into xCORE RAM and driven over JTAG to program the boot QSPI flash.
+ * One per architecture: XS2 (xCORE-200, XU208/XUF2xx), XS3 (xcore.ai, XU316). */
+extern const uint8_t flash_stub_xs2_start[] asm("_binary_flash_stub_xs2_xe_start");
+extern const uint8_t flash_stub_xs2_end[]   asm("_binary_flash_stub_xs2_xe_end");
+extern const uint8_t flash_stub_xs3_start[] asm("_binary_flash_stub_xs3_xe_start");
+extern const uint8_t flash_stub_xs3_end[]   asm("_binary_flash_stub_xs3_xe_end");
+
 /* -------------------------------------------------------------------------
  * Network init
  * ---------------------------------------------------------------------- */
@@ -494,17 +502,40 @@ static void flash_task(void *arg)
         if (s_fw_len >= 4 && (s_fw_buf[0] == 'X' || s_fw_buf[0] == 0x7F))
             err = xmos_jtag_load_xe(s_jtag, s_fw_buf, s_fw_len, true);
         else
-            err = xmos_jtag_load_raw(s_jtag, 0, s_fw_buf, s_fw_len, 0x00040000, 0x00080000);
+            /* Raw image: run from where it was loaded. (.xe carries its own
+             * entry; a raw .bin has none, so default to the load address.) */
+            err = xmos_jtag_load_raw(s_jtag, 0, s_fw_buf, s_fw_len, 0x00040000, 0x00040000);
     } else if (mode == 1) {
-        /* XMOS or iCE40: Write SPI flash */
-        snprintf(s_flash_status, sizeof(s_flash_status), "Writing SPI flash...");
-        s_flash_progress = 10;
-        xmos_spi_pins_t spi = {
-            .cs = PIN_SPI_CS, .clk = PIN_SPI_CLK,
-            .mosi = PIN_SPI_MOSI, .miso = PIN_SPI_MISO,
-            .wp = GPIO_NUM_NC, .hold = GPIO_NUM_NC,
-        };
-        err = xmos_spi_flash_program(s_jtag, &spi, s_fw_buf, s_fw_len, 0);
+        if (s_identified && (s_chip_info.family == XMOS_FAMILY_XS2 ||
+                             s_chip_info.family == XMOS_FAMILY_XS3)) {
+            /* XMOS: program the boot QSPI flash via a JTAG-loaded stub --
+             * no SPI wiring to the ESP32 needed.  Pick the stub matching the
+             * detected architecture. */
+            const uint8_t *stub; size_t stub_len; const char *arch;
+            if (s_chip_info.family == XMOS_FAMILY_XS3) {
+                stub = flash_stub_xs3_start;
+                stub_len = (size_t)(flash_stub_xs3_end - flash_stub_xs3_start);
+                arch = "XS3";
+            } else {
+                stub = flash_stub_xs2_start;
+                stub_len = (size_t)(flash_stub_xs2_end - flash_stub_xs2_start);
+                arch = "XS2";
+            }
+            snprintf(s_flash_status, sizeof(s_flash_status),
+                     "Writing XMOS flash via JTAG (%s stub)...", arch);
+            s_flash_progress = 10;
+            err = xmos_jtag_program_flash(s_jtag, s_fw_buf, s_fw_len, stub, stub_len);
+        } else {
+            /* iCE40 / other: ESP32 drives the SPI bus directly */
+            snprintf(s_flash_status, sizeof(s_flash_status), "Writing SPI flash...");
+            s_flash_progress = 10;
+            xmos_spi_pins_t spi = {
+                .cs = PIN_SPI_CS, .clk = PIN_SPI_CLK,
+                .mosi = PIN_SPI_MOSI, .miso = PIN_SPI_MISO,
+                .wp = GPIO_NUM_NC, .hold = GPIO_NUM_NC,
+            };
+            err = xmos_spi_flash_program(s_jtag, &spi, s_fw_buf, s_fw_len, 0);
+        }
     } else if (mode == 2) {
         /* iCE40: Load to CRAM via SPI */
         snprintf(s_flash_status, sizeof(s_flash_status), "Loading iCE40 CRAM via SPI...");
