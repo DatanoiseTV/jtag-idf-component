@@ -273,6 +273,61 @@ GPIO  (SRST)  ──>  RST_N       (open-drain, optional)
 GND           ──>  GND
 ```
 
+### Wiring to an XMOS xSYS connector (XU208, XU316, etc.)
+
+XMOS dev boards and most XMOS audio products expose a 20-pin **xSYS** IDC
+header (the connector the xTAG debugger plugs into). The naming in the
+xTAG/xSYS manual is the confusing part, so here it is decoded.
+
+**The one thing that trips everyone up:** XMOS calls the JTAG data lines
+**TDSRC** and **TDSNK** (data *source* / *sink*), not TDI/TDO:
+
+| xSYS name | = standard JTAG | Direction | Connect to ESP32 |
+|---|---|---|---|
+| **TDSRC** (Test Data *Source*) | **TDI** | host → target | ESP32 **TDI** (output) |
+| **TDSNK** (Test Data *Sink*)   | **TDO** | target → host | ESP32 **TDO** (input)  |
+
+There is **no TRST pin** on the xSYS connector — the XMOS TAP is reset by
+clocking TMS, so leave the ESP32 `TRST` pin unconnected (`GPIO_NUM_NC`).
+`RST_N` is the system reset (our `SRST`). `MSEL` selects boot-from-JTAG
+(active low) and is well worth wiring for recovery — see the note below.
+
+**xSYS 20-pin header pinout** (XM006125 xTAG v3.0 manual §3). Odd pins on
+one row, even on the other; pin 1 is usually marked with a triangle/square
+pad:
+
+```
+        ┌───────────────┐
+   5V   1 ● ● 2   NC
+ *MSEL  3 ● ● 4   GND
+TDSRC   5 ● ● 6   XL1_UP1     ● = connect for JTAG
+ (TDI)            (xlink, skip)
+  TMS   7 ● ● 8   GND
+  TCK   9 ● ● 10  XL1_UP0
+DEBUG  11 ● ● 12  GND
+TDSNK  13 ● ● 14  XL1_DN0
+ (TDO)
+ RST_N 15 ● ● 16  GND
+UART_RX 17 ● ● 18 XL1_DN1
+UART_TX 19 ● ● 20 GND
+        └───────────────┘
+```
+
+Minimum connection set (six wires): **TCK (9), TMS (7), TDSRC/TDI (5),
+TDSNK/TDO (13), RST_N (15), and one GND** (4/8/12/16/20 — tie at least one,
+ideally several for signal return). Ignore the `XL1_*` xCONNECT-link and
+`UART_*` pins for JTAG. Pin 1 (5V) is *target-to-host* power — do **not**
+drive 5V into it from the ESP32.
+
+> **MSEL (pin 3) for recovery:** tie it **low** (to a GND pin, or drive it
+> low from a spare GPIO) to force the xCORE to boot-from-JTAG instead of
+> running its (corrupt) flash. The core then parks in the boot ROM waiting
+> for JTAG, which is far easier to halt than a crashed application — useful
+> when "enter debug mode" fails. Release/float it for normal flash boot.
+
+> XMOS JTAG is **3.3 V** (VDDIO) — wire straight to the ESP32, no level
+> shifter (see the I/O-voltage note above).
+
 ### Classic ESP32 (WROOM-32) -- default pins
 
 | Signal | GPIO | Notes |
@@ -296,14 +351,22 @@ JTAG and SPI use separate headers so both can be wired simultaneously.
 
 **JTAG -- Right Header** (rows 7-10)
 
-| Signal | GPIO | Position |
-|---|---|---|
-| TCK | 47 | Row 8 inner |
-| TMS | 48 | Row 8 outer |
-| TDI | 46 | Row 9 inner |
-| TDO | 45 | Row 10 inner |
-| TRST | 53 | Row 7 outer |
-| SRST | 54 | Row 7 inner |
+| Signal | P4-NANO GPIO | Position | XMOS xSYS pin |
+|---|---|---|---|
+| TCK | 47 | Row 8 inner | 9 (TCK) |
+| TMS | 48 | Row 8 outer | 7 (TMS) |
+| TDI | 46 | Row 9 inner | **5 (TDSRC)** |
+| TDO | 45 | Row 10 inner | **13 (TDSNK)** |
+| TRST | 53 | Row 7 outer | *(none on xSYS — leave unconnected)* |
+| SRST | 54 | Row 7 inner | 15 (RST_N) |
+| GND | GND | — | 4/8/12/16/20 (≥1) |
+
+So for a P4-NANO ↔ XMOS xSYS target, the six wires are:
+GPIO47→pin9, GPIO48→pin7, GPIO46→pin5, GPIO45←pin13, GPIO54→pin15, and a
+GND-to-GND. (GPIO53/TRST stays unconnected — XMOS has no TRST.) Optionally
+tie xSYS pin 3 (MSEL) low for boot-from-JTAG recovery — see the xSYS note
+above. The `PIN_*` defines are in
+[`example/main/main.c`](example/main/main.c) if you wire differently.
 
 **SPI / iCE40 -- Left Header** (rows 4, 6-8)
 
