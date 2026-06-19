@@ -728,46 +728,46 @@ static void test_elf_no_pt_load(void)
  * Register Encoding Tests
  * ======================================================================= */
 
-/* sc_jtag mux-open xCORE IR = 0x00ffc00f | (((reg<<2)|op) << 4) */
+/* XS2 mux-open IR = ((reg<<2)|op) in low 10 bits | top-TAP bypass 0xF at [13:10] */
 static void test_chain_ir_reg_read(void)
 {
     TEST(chain_ir_reg_read_dbg_int);
     uint32_t ir = xmos_chain_ir_reg_read(XMOS_PSWITCH_DBG_INT);
-    /* reg=0x05, read: TapIR=(5<<2)|1=0x15; 0x00ffc00f|(0x15<<4)=0x00ffc15f */
-    if (ir == 0x00ffc15f) PASS(); else FAILF("got 0x%x, want 0x00ffc15f", ir);
+    /* reg=0x05, read: (5<<2)|1=0x15; | (0xF<<10)=0x3C00 -> 0x3C15 */
+    if (ir == 0x3C15) PASS(); else FAILF("got 0x%x, want 0x3C15", ir);
 }
 
 static void test_chain_ir_reg_write(void)
 {
     TEST(chain_ir_reg_write_dbg_int);
     uint32_t ir = xmos_chain_ir_reg_write(XMOS_PSWITCH_DBG_INT);
-    /* TapIR=(5<<2)|2=0x16; 0x00ffc00f|(0x16<<4)=0x00ffc16f */
-    if (ir == 0x00ffc16f) PASS(); else FAILF("got 0x%x, want 0x00ffc16f", ir);
+    /* (5<<2)|2=0x16; | 0x3C00 -> 0x3C16 */
+    if (ir == 0x3C16) PASS(); else FAILF("got 0x%x, want 0x3C16", ir);
 }
 
 static void test_chain_ir_all_bypass(void)
 {
     TEST(chain_ir_reg0_read_encoding);
-    /* reg=0x00 read: TapIR=1; 0x00ffc00f|(1<<4)=0x00ffc01f */
+    /* reg=0x00 read: 1 | 0x3C00 -> 0x3C01 */
     uint32_t ir = xmos_chain_ir_reg_read(0x00);
-    if (ir == 0x00ffc01f) PASS(); else FAILF("got 0x%x, want 0x00ffc01f", ir);
+    if (ir == 0x3C01) PASS(); else FAILF("got 0x%x, want 0x3C01", ir);
 }
 
 static void test_chain_ir_high_reg(void)
 {
     TEST(chain_ir_reg_0xFF_max_index);
-    /* reg=0xFF write: TapIR=(0xFF<<2)|2=0x3FE; 0x00ffc00f|(0x3FE<<4)=0x00ffffef */
+    /* reg=0xFF write: ((0xFF<<2)|2)&0x3FF=0x3FE; | 0x3C00 -> 0x3FFE */
     uint32_t ir = xmos_chain_ir_reg_write(0xFF);
-    if (ir == 0x00ffffef) PASS(); else FAILF("got 0x%x, want 0x00ffffef", ir);
+    if (ir == 0x3FFE) PASS(); else FAILF("got 0x%x, want 0x3FFE", ir);
 }
 
 static void test_chain_ir_scratch_regs(void)
 {
     TEST(chain_ir_scratch_reg_encoding);
-    /* DBG_COMMAND = 0x21 */
+    /* DBG_COMMAND = 0x21: (0x21<<2)|2=0x86; | 0x3C00 -> 0x3C86 */
     uint32_t ir_w = xmos_chain_ir_reg_write(XMOS_PSWITCH_DBG_COMMAND);
-    uint32_t tap_ir = (0x21u << 2) | 2;  /* 0x86 */
-    uint32_t expected = XMOS_XCORE_IR_OPEN_BASE | (tap_ir << XMOS_XCORE_IR_OPEN_SHIFT);
+    uint32_t expected = (((0x21u << 2) | 2) & 0x3FF)
+                      | ((uint32_t)XMOS_BSCAN_IR_BYPASS << XMOS_XCORE_TAP_IR_LEN);
     if (ir_w == expected) PASS(); else FAILF("got 0x%x, want 0x%x", ir_w, expected);
 }
 
@@ -820,22 +820,22 @@ static void test_dbg_int_bits(void)
 
 static void test_chain_ir_bit_width(void)
 {
-    TEST(chain_ir_matches_sc_jtag_formula);
-    /* Every reg/op must equal the sc_jtag base word with TapIR OR'd in,
-     * and the TapIR field (10 bits at shift 4) must not collide with the
-     * fixed low nibble (0xf at [3:0]). */
+    TEST(chain_ir_fits_14_bits_top_bypass_set);
+    /* Every reg/op must be (reg<<2)|op in the low 10 bits with the top-TAP
+     * bypass (0xF) in [13:10], and fit in 14 bits. */
     for (int reg = 0; reg <= 0xFF; reg++) {
-        uint32_t tr = ((uint32_t)reg << 2) | XMOS_REG_OP_READ;
-        uint32_t tw = ((uint32_t)reg << 2) | XMOS_REG_OP_WRITE;
-        uint32_t er = XMOS_XCORE_IR_OPEN_BASE | (tr << XMOS_XCORE_IR_OPEN_SHIFT);
-        uint32_t ew = XMOS_XCORE_IR_OPEN_BASE | (tw << XMOS_XCORE_IR_OPEN_SHIFT);
+        uint32_t top = (uint32_t)XMOS_BSCAN_IR_BYPASS << XMOS_XCORE_TAP_IR_LEN;
+        uint32_t er = ((((uint32_t)reg << 2) | XMOS_REG_OP_READ) & 0x3FF) | top;
+        uint32_t ew = ((((uint32_t)reg << 2) | XMOS_REG_OP_WRITE) & 0x3FF) | top;
         if (xmos_chain_ir_reg_read(reg) != er ||
             xmos_chain_ir_reg_write(reg) != ew) {
             FAILF("reg 0x%02x encoding mismatch", reg);
             return;
         }
-        /* low nibble stays 0xf (sc_jtag base), TapIR sits clear of it */
-        if ((er & 0xf) != 0xf) { FAILF("reg 0x%02x low nibble", reg); return; }
+        if (er >> XMOS_MUX_OPEN_IR_LEN) { FAILF("reg 0x%02x exceeds 14 bits", reg); return; }
+        if (((er >> XMOS_XCORE_TAP_IR_LEN) & 0xF) != 0xF) {
+            FAILF("reg 0x%02x top bypass", reg); return;
+        }
     }
     PASS();
 }

@@ -12,38 +12,40 @@
 #include <stdint.h>
 
 /* =========================================================================
- * Top-level TAPs.
+ * Top-level TAP (XS2 / xCORE-200).
  *
- * Even with the MUX closed, an XMOS device exposes TWO TAPs in the chain
- * (sc_jtag jtag_chip_tap_reg_access scans an 8-bit IR / 33-bit DR):
+ * IMPORTANT XS1 -> XS2 difference (XMOS engineer "XMatt", xcore.com t=3277,
+ * and segher's xena-xtools jtag.c): XS1 exposed TWO top TAPs after reset
+ * (boundary-scan + chip).  XS2/XU208 MERGED them into ONE top-level TAP
+ * (4-bit IR) and REMOVED the OTP TAP from the internal chain.  An earlier
+ * revision here used the XS1 two-TAP / OTP framing (8-bit closed IR, 22-bit
+ * open IR with OTP, data<<1) and on real XU208 silicon every mux-open
+ * register read returned 0x00000000 (the identify() self-test caught it).
+ * The framing below is the XS2 single-TAP model.
  *
- *   TDI -> BSCAN TAP (4-bit IR) -> CHIP TAP (4-bit IR) -> TDO
- *
- * SETMUX / SET_TEST_MODE are CHIP TAP instructions (sc_jtag jtag.xc).
- * The boundary-scan instructions (EXTEST/SAMPLE) live on the BSCAN TAP;
- * their opcodes below are NOT confirmed by any public source (no XMOS
- * BSDL is published) -- treat as best-effort.
+ * The same top-TAP instructions as XS1 are kept (SETMUX etc.).  EXTEST/
+ * SAMPLE opcodes are still unconfirmed (no public XMOS BSDL).
  * ======================================================================= */
-#define XMOS_BSCAN_IR_LEN            4
+#define XMOS_BSCAN_IR_LEN            4     /* top-level TAP IR width */
 #define XMOS_BSCAN_IR_EXTEST         0x0   /* UNVERIFIED (no public BSDL) */
 #define XMOS_BSCAN_IR_SAMPLE         0x2   /* UNVERIFIED (no public BSDL) */
 #define XMOS_BSCAN_IR_BYPASS         0xF
 
-#define XMOS_CHIP_TAP_IR_DEVICE_ID   0x3   /* sc_jtag jtag_read_idcode (0xfff3) */
-#define XMOS_CHIP_TAP_IR_SETMUX      0x4   /* sc_jtag SETMUX_IR */
-#define XMOS_CHIP_TAP_IR_GETMUX      0x5   /* sc_jtag GETMUX_IR */
-#define XMOS_CHIP_TAP_IR_SET_TEST_MODE 0x8 /* sc_jtag SET_TEST_MODE_IR */
+#define XMOS_TOP_TAP_IR_LEN          4     /* single merged top-level TAP */
+#define XMOS_CHIP_TAP_IR_DEVICE_ID   0x3   /* segher jtag_read_idcode */
+#define XMOS_CHIP_TAP_IR_SETMUX      0x4   /* SETMUX */
+#define XMOS_CHIP_TAP_IR_GETMUX      0x5   /* GETMUX */
+#define XMOS_CHIP_TAP_IR_SET_TEST_MODE 0x8 /* SET_TEST_MODE */
 
-/* Closed-chain (MUX_NC) scan geometry, per sc_jtag:
- *   IR = CHIP(4, bits[3:0], nearest TDO) + BSCAN(4, bits[7:4]) = 8 bits
- *   DR = CHIP DR(32) + BSCAN bypass(1) = 33 bits, data in low 32 */
-#define XMOS_CLOSED_IR_LEN           8
-#define XMOS_CLOSED_DR_LEN           33
+/* SETMUX DR width.  segher writes the 4-bit mux value as a wide DR
+ * (do_dr_out(mux, 32)); on the XS2 single TAP we shift the value over this
+ * width.  Flagged for hardware confirmation (see flash_stub/README notes). */
+#define XMOS_SETMUX_DR_LEN           32
 
 /* =========================================================================
  * Chip TAP MUX target values (shifted into DR after SETMUX IR)
  *
- * Source: sc_jtag jtag.xc chip_tap_mux_values[]
+ * Source: segher xena-xtools jtag.c (jtag_set_mux: 8 + core), sc_jtag.
  * ======================================================================= */
 #define XMOS_MUX_NC        0x0     /* not connected */
 #define XMOS_MUX_SSWITCH   0x1     /* system switch */
@@ -70,61 +72,45 @@ static inline uint32_t xmos_tile_to_mux(int tile)
 #define XMOS_TEST_MODE_OTP_SERIAL_EN 0x4
 
 /* =========================================================================
- * Mux-open scan geometry (when MUX is open to an xCORE / SSWITCH)
+ * Mux-open register-access geometry (XS2 single-tile: XU208/XUF208).
  *
- * Chain when open: BSCAN(4) + CHIP(4) + XCORE(10) + OTP(2) = 20 IR bits.
- * sc_jtag, however, ALWAYS scans 22 IR bits / 35 DR bits for mux-open
- * access -- the two extra MSB IR bits are don't-cares that flush through.
- * It does NOT build the IR from named fields; it OR's the instruction
- * into a fixed base word that already carries every bypass.  Matching
- * those literal words is what makes register access actually land on the
- * XS2 -- a hand-rolled 20-bit field layout reads IDCODE fine but fails
- * to enter debug.  Verified bug 2026-06: 20-bit IR -> "failed to enter
- * debug mode"; 22-bit sc_jtag framing fixes it.
+ * From segher's xena-xtools jtag.c (the authoritative reverse-engineered
+ * reference) with XMatt's XS2 deltas applied (merged top TAP, OTP removed):
  *
- *   chip-TAP IR  = 0x00fc3fff | (chip_cmd << 14)   (SETMUX etc.)
- *   xCORE-reg IR = 0x00ffc00f | (tap_ir   << 4)
- *   DR (both)    = 35 bits, shift in (data << N)
+ *   debug_read_pswitch(reg):  do_ir((reg<<2)|1, 10); do_dr_in (val, 32)
+ *   debug_write_pswitch(reg): do_ir((reg<<2)|2, 10); do_dr_out(val, 32)
+ *
+ * The module (xCORE / SSWITCH) TAP IR is 10 bits = (reg<<2)|op (op 1=read,
+ * 2=write).  The data DR is PLAIN 32 bits -- NOT data<<1; the bypass bits
+ * are pre/post-chain, never folded into the data.
+ *
+ * XS2 chain when a module is selected (no OTP, one merged top TAP):
+ *   IR = MODULE(10, low bits) + TOP bypass(4) = 14 bits
+ *   DR = MODULE data(32, low bits) + TOP bypass(1) = 33 bits
+ *   readback value = DR[31:0]  (same for xCORE and SSWITCH on XS2)
  * ======================================================================= */
-#define XMOS_CHIP_TAP_IR_LEN         4
-#define XMOS_XCORE_TAP_IR_LEN        10
-#define XMOS_OTP_TAP_IR_LEN          2
+#define XMOS_XCORE_TAP_IR_LEN        10          /* module (xCORE/SSWITCH) IR */
 
-#define XMOS_MUX_OPEN_IR_LEN         22          /* sc_jtag mux-open IR scan */
-#define XMOS_MUX_CHAIN_IR_LEN        20          /* actual open chain IR len */
-#define XMOS_MUX_OPEN_DR_LEN         35
-#define XMOS_MUX_OPEN_BYP_LEN        4           /* sc_jtag MUX_XCORE_BYP_LEN */
+#define XMOS_MUX_OPEN_IR_LEN         14          /* MODULE(10) + TOP bypass(4) */
+#define XMOS_MUX_OPEN_DR_LEN         33          /* data(32) + TOP bypass(1) */
 
-#define XMOS_CHIP_IR_OPEN_BASE       0x00fc3fffu /* | (chip_cmd << 14) */
-#define XMOS_CHIP_IR_OPEN_SHIFT      14
-#define XMOS_XCORE_IR_OPEN_BASE      0x00ffc00fu /* | (tap_ir   << 4)  */
-#define XMOS_XCORE_IR_OPEN_SHIFT     4
-
-/* DR scan for register access (sc_jtag jtag_module_reg_access):
- *   - 35 DR bits, shift in (data << 1)
- *   - readback: SSWITCH value = dr_out[31:0]
- *               xCORE   value = (dr_out >> 1)[31:0] */
-#define XMOS_REG_DR_LEN              35
-
-/* xCORE TAP IR encoding (sc_jtag): bits [9:2] = register, [1:0] = op */
+/* module TAP IR encoding: bits[9:2] = register, [1:0] = op */
 #define XMOS_REG_OP_BYPASS  0
 #define XMOS_REG_OP_READ    1
 #define XMOS_REG_OP_WRITE   2
 
-/* =========================================================================
- * Construct the mux-open IR word for an xCORE register access.
- * Mirrors sc_jtag: TapIR = (reg << 2) | op, OR'd into the base at bit 4.
- * ======================================================================= */
+/* Build the 14-bit mux-open IR: module IR in low 10 bits, top-TAP bypass
+ * (0xF) in bits [13:10]. */
 static inline uint32_t xmos_chain_ir_reg_read(uint8_t reg)
 {
-    uint32_t tap_ir = ((uint32_t)reg << 2) | XMOS_REG_OP_READ;
-    return XMOS_XCORE_IR_OPEN_BASE | (tap_ir << XMOS_XCORE_IR_OPEN_SHIFT);
+    uint32_t mod = (((uint32_t)reg << 2) | XMOS_REG_OP_READ) & 0x3FF;
+    return mod | ((uint32_t)XMOS_BSCAN_IR_BYPASS << XMOS_XCORE_TAP_IR_LEN);
 }
 
 static inline uint32_t xmos_chain_ir_reg_write(uint8_t reg)
 {
-    uint32_t tap_ir = ((uint32_t)reg << 2) | XMOS_REG_OP_WRITE;
-    return XMOS_XCORE_IR_OPEN_BASE | (tap_ir << XMOS_XCORE_IR_OPEN_SHIFT);
+    uint32_t mod = (((uint32_t)reg << 2) | XMOS_REG_OP_WRITE) & 0x3FF;
+    return mod | ((uint32_t)XMOS_BSCAN_IR_BYPASS << XMOS_XCORE_TAP_IR_LEN);
 }
 
 /* =========================================================================

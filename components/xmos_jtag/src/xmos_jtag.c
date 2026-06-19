@@ -80,72 +80,40 @@ static esp_err_t shift_dr_val(xmos_jtag_handle_t h, uint64_t val,
  * ======================================================================= */
 
 /**
- * Execute a chip TAP instruction with a 32-bit DR value.
- * Mirrors sc_jtag jtag_chip_tap_reg_access() exactly.
- */
-static esp_err_t chip_tap_access(xmos_jtag_handle_t h,
-                                 uint32_t command, uint32_t data)
-{
-    esp_err_t err;
-
-    if (h->mux_open) {
-        /* Mux open: 22-bit IR (command at [17:14]), 35-bit DR, data << 2 */
-        uint32_t ir = XMOS_CHIP_IR_OPEN_BASE | (command << XMOS_CHIP_IR_OPEN_SHIFT);
-        err = shift_ir_val(h, ir, XMOS_MUX_OPEN_IR_LEN);
-        if (err != ESP_OK) return err;
-
-        err = shift_dr_val(h, (uint64_t)data << 2, NULL, XMOS_MUX_OPEN_DR_LEN);
-        if (err != ESP_OK) return err;
-    } else {
-        /* Mux closed: 8-bit IR (CHIP=command [3:0], BSCAN bypass [7:4]),
-         * 33-bit DR. */
-        uint32_t ir = command | ((uint32_t)XMOS_BSCAN_IR_BYPASS << 4);
-        err = shift_ir_val(h, ir, XMOS_CLOSED_IR_LEN);
-        if (err != ESP_OK) return err;
-
-        err = shift_dr_val(h, data, NULL, XMOS_CLOSED_DR_LEN);
-        if (err != ESP_OK) return err;
-    }
-
-    /* Post-access flush: every TAP back to BYPASS (sc_jtag uses a 22-bit
-     * all-ones IR scan here regardless of chain length). */
-    return shift_ir_val(h, 0xFFFFFFFF, XMOS_MUX_OPEN_IR_LEN);
-}
-
-/**
- * Select a MUX target.  After this call, if target != MUX_NC, the
- * JTAG chain includes the internal TAPs.
+ * Select a MUX target (open the internal chain to an xCORE tile or the
+ * system switch).  XS2 single-TAP model, per segher's xena-xtools jtag.c
+ * (jtag_reset; jtag_set_mux: do_ir(0x4,4); do_dr_out(8+core,32)):
+ * SETMUX is issued on the freshly-reset single top-level TAP.
  */
 static esp_err_t mux_select(xmos_jtag_handle_t h, uint32_t target)
 {
-    esp_err_t err = chip_tap_access(h, XMOS_CHIP_TAP_IR_SETMUX, target);
+    /* Reset returns the chain to the single top-level TAP (and, with TRST
+     * wired, resets the MUX controller).  segher always resets before
+     * SETMUX, so the instruction lands on a clean one-TAP chain. */
+    esp_err_t err = h->transport->reset(h->transport);
+    if (err != ESP_OK) return err;
+
+    err = shift_ir_val(h, XMOS_CHIP_TAP_IR_SETMUX, XMOS_TOP_TAP_IR_LEN);
+    if (err != ESP_OK) return err;
+    err = shift_dr_val(h, target, NULL, XMOS_SETMUX_DR_LEN);
     if (err != ESP_OK) return err;
 
     h->mux_open = (target != XMOS_MUX_NC);
     h->mux_state = (int)target;
 
-    /* When opening to a tile, sc_jtag (conditionally_set_mux_for_chipmodule)
-     * follows SETMUX with a workaround flush: 20-bit all-ones IR + 4-bit DR.
-     * "TODO -- Find out why this work around is required!!!" -- keep it. */
-    if (h->mux_open) {
-        err = shift_ir_val(h, 0xFFFFFFFF, XMOS_MUX_CHAIN_IR_LEN);
-        if (err != ESP_OK) return err;
-        err = shift_dr_val(h, 0xF, NULL, XMOS_MUX_OPEN_BYP_LEN);
-        if (err != ESP_OK) return err;
-    }
-
-    /* Allow the MUX to settle */
+    /* Dead cycles after a MUX change (segher: "needed when changing MUX"). */
     h->transport->idle(h->transport, 4);
 
     return ESP_OK;
 }
 
 /* =========================================================================
- * Register access through the internal chain (sc_jtag jtag_module_reg_access)
+ * Register access through the internal chain (XS2, segher xena-xtools)
  *
- * Mux-open IR is scanned as 22 bits: TapIR = (reg << 2) | op, OR'd into a
- * fixed base at bit 4.  DR is 35 bits, data shifted in << 1; the readback
- * is the raw stream for the system switch and (stream >> 1) for an xCORE.
+ * With a module selected the chain is MODULE(IR10) + top-TAP(IR4 bypass):
+ *   IR = (reg<<2)|op  in low 10 bits, top-TAP bypass 0xF in [13:10] (14 bits)
+ *   DR = 32-bit data in low bits, top-TAP bypass (1 bit) = 33 bits, NO <<1
+ *   readback value = DR[31:0]  (xCORE and SSWITCH identical on XS2)
  * ======================================================================= */
 
 static esp_err_t reg_access(xmos_jtag_handle_t h, int tile, uint8_t reg,
@@ -161,21 +129,18 @@ static esp_err_t reg_access(xmos_jtag_handle_t h, int tile, uint8_t reg,
     }
 
     uint32_t op = is_write ? XMOS_REG_OP_WRITE : XMOS_REG_OP_READ;
-    uint32_t tap_ir = ((uint32_t)reg << 2) | op;
-    uint32_t ir = XMOS_XCORE_IR_OPEN_BASE | (tap_ir << XMOS_XCORE_IR_OPEN_SHIFT);
+    uint32_t ir = (((uint32_t)reg << 2) | op)
+                | ((uint32_t)XMOS_BSCAN_IR_BYPASS << XMOS_XCORE_TAP_IR_LEN);
 
     esp_err_t err = shift_ir_val(h, ir, XMOS_MUX_OPEN_IR_LEN);
     if (err != ESP_OK) return err;
 
     uint64_t dr_out = 0;
-    err = shift_dr_val(h, (uint64_t)wr_val << 1,
-                       rd_val ? &dr_out : NULL, XMOS_MUX_OPEN_DR_LEN);
+    err = shift_dr_val(h, wr_val, rd_val ? &dr_out : NULL, XMOS_MUX_OPEN_DR_LEN);
     if (err != ESP_OK) return err;
 
-    if (rd_val) {
-        *rd_val = is_sswitch ? (uint32_t)dr_out
-                             : (uint32_t)(dr_out >> 1);
-    }
+    if (rd_val)
+        *rd_val = (uint32_t)dr_out;   /* low 32 bits, no shift */
 
     return ESP_OK;
 }
