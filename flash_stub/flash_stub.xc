@@ -62,9 +62,20 @@
 #define ST_ERROR   0x80
 
 /* Shared data buffer in tile RAM. Must equal RAM_BASE + STUB_DATA_BUF_OFFSET
- * on the host (0x00040000 + 0x10000 = 0x00050000) and be reserved by the
- * linker so it does not overlap this program. */
+ * on the host and be reserved by the linker so it does not overlap this
+ * program.  RAM_BASE is architecture-specific: xCORE-200 (XS2) maps SRAM at
+ * 0x40000, xcore.ai (XS3) at 0x80000, so the buffer must track the arch or it
+ * lands outside valid RAM.
+ *   XS2: 0x40000 + 0x10000 = 0x00050000
+ *   XS3: 0x80000 + 0x10000 = 0x00090000
+ * NOTE: flash_stub_xs3.xe shipped in example/main/ was built BEFORE this fix
+ * (DATA_BUF_ADDR was a flat 0x50000) and must be rebuilt to program XS3 flash;
+ * flash_stub_xs2.xe is correct as-is. */
+#if defined(__XS3A__)
+#define DATA_BUF_ADDR  0x00090000
+#else
 #define DATA_BUF_ADDR  0x00050000
+#endif
 
 /* QSPI boot ports -- IDENTICAL on xCORE-200 (XU208/XUF208/XUF216) and
  * xcore.ai (XU316): AN00185 §2.3 / XU208 §8.1 / XU316 boot section, and

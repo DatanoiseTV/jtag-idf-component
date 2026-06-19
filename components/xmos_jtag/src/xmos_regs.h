@@ -196,7 +196,11 @@ static inline uint32_t xmos_chain_ir_reg_write(uint8_t reg)
  * ======================================================================= */
 #define XMOS_XS1_RAM_BASE            0x00040000u
 #define XMOS_XS2_RAM_BASE            0x00040000u
-#define XMOS_XS3_RAM_BASE            0x00040000u
+/* xcore.ai (XS3) maps its SRAM at 0x00080000, not 0x40000 -- confirmed by
+ * the load addresses in a real xs3a .xe (flash_stub_xs3.xe segments load at
+ * 0x80000).  Using 0x40000 here put the flash-stub data buffer below valid
+ * XS3 RAM. */
+#define XMOS_XS3_RAM_BASE            0x00080000u
 
 /* =========================================================================
  * Known JTAG IDCODE values

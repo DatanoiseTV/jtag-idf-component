@@ -147,13 +147,13 @@ static char s_flash_status[128] = "Idle";
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
 
-/* JTAG flash-programmer stubs (compiled with the XMOS toolchain).  Loaded
- * into xCORE RAM and driven over JTAG to program the boot QSPI flash.
- * One per architecture: XS2 (xCORE-200, XU208/XUF2xx), XS3 (xcore.ai, XU316). */
+/* JTAG flash-programmer stub (compiled with the XMOS toolchain).  Loaded into
+ * xCORE RAM and driven over JTAG to program the boot QSPI flash.  Only the XS2
+ * (xCORE-200, XU208/XUF2xx) build is bundled: the XS3/xcore.ai stub needs its
+ * data buffer in XS3 RAM (0x90000, not 0x50000) and must be rebuilt -- see
+ * flash_stub/. */
 extern const uint8_t flash_stub_xs2_start[] asm("_binary_flash_stub_xs2_xe_start");
 extern const uint8_t flash_stub_xs2_end[]   asm("_binary_flash_stub_xs2_xe_end");
-extern const uint8_t flash_stub_xs3_start[] asm("_binary_flash_stub_xs3_xe_start");
-extern const uint8_t flash_stub_xs3_end[]   asm("_binary_flash_stub_xs3_xe_end");
 
 /* -------------------------------------------------------------------------
  * Network init
@@ -506,25 +506,21 @@ static void flash_task(void *arg)
              * entry; a raw .bin has none, so default to the load address.) */
             err = xmos_jtag_load_raw(s_jtag, 0, s_fw_buf, s_fw_len, 0x00040000, 0x00040000);
     } else if (mode == 1) {
-        if (s_identified && (s_chip_info.family == XMOS_FAMILY_XS2 ||
-                             s_chip_info.family == XMOS_FAMILY_XS3)) {
-            /* XMOS: program the boot QSPI flash via a JTAG-loaded stub --
-             * no SPI wiring to the ESP32 needed.  Pick the stub matching the
-             * detected architecture. */
-            const uint8_t *stub; size_t stub_len; const char *arch;
-            if (s_chip_info.family == XMOS_FAMILY_XS3) {
-                stub = flash_stub_xs3_start;
-                stub_len = (size_t)(flash_stub_xs3_end - flash_stub_xs3_start);
-                arch = "XS3";
-            } else {
-                stub = flash_stub_xs2_start;
-                stub_len = (size_t)(flash_stub_xs2_end - flash_stub_xs2_start);
-                arch = "XS2";
-            }
+        if (s_identified && s_chip_info.family == XMOS_FAMILY_XS2) {
+            /* XMOS XS2: program the boot QSPI flash via the JTAG-loaded stub --
+             * no SPI wiring to the ESP32 needed. */
             snprintf(s_flash_status, sizeof(s_flash_status),
-                     "Writing XMOS flash via JTAG (%s stub)...", arch);
+                     "Writing XMOS flash via JTAG (XS2 stub)...");
             s_flash_progress = 10;
-            err = xmos_jtag_program_flash(s_jtag, s_fw_buf, s_fw_len, stub, stub_len);
+            err = xmos_jtag_program_flash(s_jtag, s_fw_buf, s_fw_len,
+                                          flash_stub_xs2_start,
+                                          (size_t)(flash_stub_xs2_end - flash_stub_xs2_start));
+        } else if (s_identified && s_chip_info.family == XMOS_FAMILY_XS3) {
+            /* The bundled stub is XS2-only; the XS3 build needs its data buffer
+             * relocated into XS3 RAM and rebuilt before it can program flash. */
+            snprintf(s_flash_status, sizeof(s_flash_status),
+                     "XS3 flash stub not bundled -- rebuild flash_stub.xc for xs3a (see flash_stub/)");
+            err = ESP_ERR_NOT_SUPPORTED;
         } else {
             /* iCE40 / other: ESP32 drives the SPI bus directly */
             snprintf(s_flash_status, sizeof(s_flash_status), "Writing SPI flash...");

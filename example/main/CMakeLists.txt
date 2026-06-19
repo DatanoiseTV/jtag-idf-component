@@ -16,5 +16,5 @@ idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
     REQUIRES ${requires}
-    EMBED_FILES "index.html" "flash_stub_xs2.xe" "flash_stub_xs3.xe"
+    EMBED_FILES "index.html" "flash_stub_xs2.xe"
 )

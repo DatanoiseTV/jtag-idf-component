@@ -1109,6 +1109,14 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
 /* Shared data buffer, relative to the tile RAM base. Must match the stub. */
 #define STUB_DATA_BUF_OFFSET  0x10000u
 
+/* SRAM base for the detected family.  XS1/XS2 map RAM at 0x40000; xcore.ai
+ * (XS3) maps it at 0x80000, so the stub data buffer has to track the family
+ * or it lands outside valid RAM. */
+static uint32_t ram_base_for_family(xmos_family_t fam)
+{
+    return (fam == XMOS_FAMILY_XS3) ? XMOS_XS3_RAM_BASE : XMOS_XS2_RAM_BASE;
+}
+
 static esp_err_t wait_stub_status(xmos_jtag_handle_t h, int tile,
                                   uint32_t expected, int timeout_ms)
 {
@@ -1171,7 +1179,7 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
 
     esp_err_t err;
     int tile = 0;
-    uint32_t buf_addr = XMOS_XS2_RAM_BASE + STUB_DATA_BUF_OFFSET;
+    uint32_t buf_addr = ram_base_for_family(h->chip.family) + STUB_DATA_BUF_OFFSET;
     const size_t sector_size = 4096;
     const size_t chunk_size  = 256;   /* SPI flash page size */
 

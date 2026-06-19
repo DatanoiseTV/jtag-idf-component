@@ -5,18 +5,25 @@ This directory holds the **on-chip flash programmer** used by
 QSPI/SPI flash over JTAG — the same approach `xflash` uses (load a small
 program into the xCORE's RAM, run it, and stream flash data to it).
 
-> **Status: compiled stubs are embedded in the example, pending on-silicon
-> validation.** Building an xCORE program needs the XMOS toolchain (`xcc`),
-> so the component itself ships no binary, but the example app
-> (`example/main/`) now embeds prebuilt `flash_stub_xs2.xe` and
-> `flash_stub_xs3.xe` and drives them from the "Write Flash" action when an
-> XMOS device is detected. The stub is correct-by-construction against the
-> documented `libquadflash` API and the host protocol below; the one part
-> that can only be confirmed on hardware is whether the running core's
-> `getps`/`setps` alias the same PSWITCH scratch registers the host writes
-> over JTAG. If you only need to recover a device and can reach the flash
-> chip's pins, the **direct-SPI** path (`xmos_spi_flash_program()`, fully
-> implemented) is simpler — see the component README.
+> **Status: the XS2 stub is embedded in the example, pending on-silicon
+> validation; XS3 must be rebuilt.** Building an xCORE program needs the XMOS
+> toolchain (`xcc`), so the component itself ships no binary, but the example
+> app (`example/main/`) embeds the prebuilt `flash_stub_xs2.xe` and drives it
+> from the "Write Flash" action when an XS2 device is detected. The stub is
+> correct-by-construction against the documented `libquadflash` API and the
+> host protocol below; the one part that can only be confirmed on hardware is
+> whether the running core's `getps`/`setps` alias the same PSWITCH scratch
+> registers the host writes over JTAG. If you only need to recover a device
+> and can reach the flash chip's pins, the **direct-SPI** path
+> (`xmos_spi_flash_program()`, fully implemented) is simpler — see the
+> component README.
+>
+> **XS3/xcore.ai is not bundled.** xcore.ai maps SRAM at `0x80000`, so the
+> shared data buffer must sit at `0x90000`, not the XS2 value `0x50000`.
+> `flash_stub.xc` now selects this automatically (`#if defined(__XS3A__)`),
+> but you must compile it for `xs3a` yourself and drop the resulting `.xe`
+> into `example/main/` (and re-enable the XS3 branch); the example refuses
+> the XS3 flash path until then rather than risk writing garbage.
 >
 > **Page alignment is required.** This stub's only write primitive is
 > `quad_spi_flash_write_page()` (full 256-byte page), so every `WRITE` must
