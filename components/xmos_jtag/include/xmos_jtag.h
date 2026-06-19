@@ -114,6 +114,29 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t handle,
                              xmos_chip_info_t *chip_info);
 
 /* -------------------------------------------------------------------------
+ * Low-level JTAG diagnostics (for "no device detected" debugging)
+ * ---------------------------------------------------------------------- */
+typedef struct {
+    uint32_t idcode_raw;        /**< Raw 32-bit IDCODE shifted out */
+    int      tdo_idle;          /**< TDO level with TCK idle (-1 = unknown) */
+    int      tdo_activity_ones; /**< # of 1 bits over a 64-clock probe shift */
+    int      loopback_hi;       /**< TDO while TDI driven HIGH (-1=n/a) */
+    int      loopback_lo;       /**< TDO while TDI driven LOW  (-1=n/a) */
+    bool     pin_probe_ok;      /**< true if the backend supports pin probing */
+} xmos_jtag_diag_t;
+
+/**
+ * Run a low-level JTAG diagnostic and log it verbosely.
+ *
+ * Reports the static TDO level, TDO activity over a dummy shift, the raw
+ * IDCODE, and (with an external TDI->TDO jumper) a pin loopback -- enough
+ * to tell "TDO held low / wrong pin", "TDO floating / not connected",
+ * "pins dead", and "target responding" apart.
+ */
+esp_err_t xmos_jtag_diagnose(xmos_jtag_handle_t handle,
+                             xmos_jtag_diag_t *out);
+
+/* -------------------------------------------------------------------------
  * Register access
  * ---------------------------------------------------------------------- */
 

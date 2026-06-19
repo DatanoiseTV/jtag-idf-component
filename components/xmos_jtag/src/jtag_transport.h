@@ -61,6 +61,15 @@ struct jtag_transport {
     esp_err_t (*idle)(jtag_transport_t *self, unsigned cycles);
 
     /**
+     * Optional low-level pin probe for diagnostics; NULL if unsupported.
+     * Reports the static TDO level with TCK idle, and a TDI->TDO loopback
+     * (drive TDI high then low, read TDO) which, with an external
+     * TDI-to-TDO jumper, proves the bit-bang pins toggle and read back.
+     */
+    void (*pin_probe)(jtag_transport_t *self, int *tdo_idle,
+                      int *loopback_hi, int *loopback_lo);
+
+    /**
      * Free backend resources.
      */
     void (*free)(jtag_transport_t *self);

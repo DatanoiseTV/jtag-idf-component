@@ -5,12 +5,26 @@
  * which are fast enough for JTAG bit-bang (1-5 MHz TCK).
  */
 
+#include "sdkconfig.h"
 #include "jtag_transport.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "esp_rom_sys.h"
 #include <stdlib.h>
 #include <string.h>
+
+/*
+ * Half-clock delay (microseconds).  Without it the bit-bang clock free-runs
+ * at several MHz on fast parts (e.g. ESP32-P4 @ 360 MHz) with a near-zero
+ * TCK pulse width -- fine on a clean PCB but unreliable over breadboard /
+ * jumper wiring (ringing, slow edges), which shows up as IDCODE=0.  Cap the
+ * GPIO backend at ~500 kHz and honour a lower CONFIG_XMOS_JTAG_TCK_FREQ_KHZ.
+ */
+#if !defined(CONFIG_XMOS_JTAG_TCK_FREQ_KHZ) || CONFIG_XMOS_JTAG_TCK_FREQ_KHZ >= 500
+#define TCK_HALF_US 1
+#else
+#define TCK_HALF_US (1000 / (2 * CONFIG_XMOS_JTAG_TCK_FREQ_KHZ))
+#endif
 
 static const char *TAG = "jtag_gpio";
 
@@ -36,11 +50,16 @@ static inline int jtag_clock(jtag_gpio_ctx_t *ctx, int tms, int tdi)
     gpio_set_level(ctx->pins.tms, tms);
     gpio_set_level(ctx->pins.tdi, tdi);
 
-    /* Sample TDO while TCK is still low */
+    /* Low phase: lets TMS/TDI settle (setup time) and TDO stabilise */
+    esp_rom_delay_us(TCK_HALF_US);
+
+    /* Sample TDO just before the rising edge (it carries the bit the target
+     * produced on the previous falling edge) */
     int tdo = gpio_get_level(ctx->pins.tdo);
 
     /* Rising edge -- device samples TMS/TDI */
     gpio_set_level(ctx->pins.tck, 1);
+    esp_rom_delay_us(TCK_HALF_US);   /* high phase width */
 
     /* Falling edge -- device updates TDO for the next cycle */
     gpio_set_level(ctx->pins.tck, 0);
@@ -144,6 +163,26 @@ static esp_err_t gpio_idle(jtag_transport_t *self, unsigned cycles)
     return ESP_OK;
 }
 
+/* Diagnostic pin probe (see jtag_transport.h). */
+static void gpio_pin_probe(jtag_transport_t *self, int *tdo_idle,
+                           int *loopback_hi, int *loopback_lo)
+{
+    jtag_gpio_ctx_t *ctx = (jtag_gpio_ctx_t *)self;
+
+    gpio_set_level(ctx->pins.tck, 0);
+    esp_rom_delay_us(5);
+    if (tdo_idle) *tdo_idle = gpio_get_level(ctx->pins.tdo);
+
+    /* Drive TDI high/low and read TDO -- with an external TDI->TDO jumper
+     * this confirms the output and input pins work on this board. */
+    gpio_set_level(ctx->pins.tdi, 1);
+    esp_rom_delay_us(5);
+    if (loopback_hi) *loopback_hi = gpio_get_level(ctx->pins.tdo);
+    gpio_set_level(ctx->pins.tdi, 0);
+    esp_rom_delay_us(5);
+    if (loopback_lo) *loopback_lo = gpio_get_level(ctx->pins.tdo);
+}
+
 static void gpio_free(jtag_transport_t *self)
 {
     jtag_gpio_ctx_t *ctx = (jtag_gpio_ctx_t *)self;
@@ -217,11 +256,12 @@ esp_err_t jtag_transport_gpio_create(const xmos_jtag_pins_t *pins,
         }
     }
 
-    ctx->base.reset    = gpio_reset;
-    ctx->base.shift_ir = gpio_shift_ir;
-    ctx->base.shift_dr = gpio_shift_dr;
-    ctx->base.idle     = gpio_idle;
-    ctx->base.free     = gpio_free;
+    ctx->base.reset     = gpio_reset;
+    ctx->base.shift_ir  = gpio_shift_ir;
+    ctx->base.shift_dr  = gpio_shift_dr;
+    ctx->base.idle      = gpio_idle;
+    ctx->base.pin_probe = gpio_pin_probe;
+    ctx->base.free      = gpio_free;
 
     ESP_LOGI(TAG, "GPIO JTAG: TCK=%d TMS=%d TDI=%d TDO=%d",
              pins->tck, pins->tms, pins->tdi, pins->tdo);

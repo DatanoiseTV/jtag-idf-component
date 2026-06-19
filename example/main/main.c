@@ -273,6 +273,26 @@ static esp_err_t handler_identify(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/diag -- low-level JTAG diagnostic (verbose serial + JSON) */
+static esp_err_t handler_diag(httpd_req_t *req)
+{
+    xmos_jtag_diag_t d;
+    esp_err_t err = xmos_jtag_diagnose(s_jtag, &d);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "diag failed");
+        return ESP_FAIL;
+    }
+    char json[256];
+    snprintf(json, sizeof(json),
+        "{\"idcode\":\"0x%08lx\",\"tdo_idle\":%d,\"tdo_activity_ones\":%d,"
+        "\"loopback_hi\":%d,\"loopback_lo\":%d,\"pin_probe\":%s}",
+        (unsigned long)d.idcode_raw, d.tdo_idle, d.tdo_activity_ones,
+        d.loopback_hi, d.loopback_lo, d.pin_probe_ok ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    return ESP_OK;
+}
+
 /* GET /api/chain -- scan JTAG chain, return all devices */
 static esp_err_t handler_chain(httpd_req_t *req)
 {
@@ -599,6 +619,7 @@ static void start_webserver(void)
     const httpd_uri_t uris[] = {
         { .uri = "/",              .method = HTTP_GET,  .handler = handler_index },
         { .uri = "/api/identify",  .method = HTTP_GET,  .handler = handler_identify },
+        { .uri = "/api/diag",      .method = HTTP_GET,  .handler = handler_diag },
         { .uri = "/api/chain",     .method = HTTP_GET,  .handler = handler_chain },
         { .uri = "/api/bscan",     .method = HTTP_GET,  .handler = handler_bscan },
         { .uri = "/api/upload",    .method = HTTP_POST, .handler = handler_upload },

@@ -576,11 +576,11 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
     }
 
     /* Self-test the mux-open register path: read the system switch's JTAG
-     * device-ID register (sc_jtag XS1_SSWITCH_JTAG_DEVICE_ID_NUM = 0x9).
-     * A value matching the IDCODE confirms SETMUX + 22-bit register access
-     * work end-to-end on this board; 0x0 or 0xFFFFFFFF means the mux-open
-     * path (not just detection) is the problem -- which isolates a "failed
-     * to enter debug mode" to wiring/framing vs. core state. */
+     * device-ID register (XS1_SSWITCH_JTAG_DEVICE_ID_NUM = 0x9).  A value
+     * matching the IDCODE confirms SETMUX + 14-bit register access work
+     * end-to-end on this board; 0x0 or 0xFFFFFFFF means the mux-open path
+     * (not just detection) is the problem -- which isolates a "failed to
+     * enter debug mode" to wiring/framing vs. core state. */
     uint32_t sw_id = 0;
     if (xmos_jtag_read_reg(h, -1, XMOS_SSWITCH_JTAG_DEVICE_ID, &sw_id) == ESP_OK) {
         ESP_LOGI(TAG, "Mux-open self-test: SSWITCH device-id (reg 0x9) = 0x%08lx%s",
@@ -595,6 +595,71 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
     h->mux_state = -1;
 
     h->chip = *chip_info;
+    return ESP_OK;
+}
+
+/* =========================================================================
+ * Public API: Low-level diagnostics
+ * ======================================================================= */
+
+esp_err_t xmos_jtag_diagnose(xmos_jtag_handle_t h, xmos_jtag_diag_t *out)
+{
+    xmos_jtag_diag_t d = { .tdo_idle = -1, .loopback_hi = -1, .loopback_lo = -1 };
+
+    h->mux_open = false;
+    h->mux_state = -1;
+    esp_err_t err = h->transport->reset(h->transport);
+    if (err != ESP_OK) return err;
+
+    /* Static pin state + TDI->TDO loopback (needs the backend's pin probe) */
+    if (h->transport->pin_probe) {
+        d.pin_probe_ok = true;
+        h->transport->pin_probe(h->transport, &d.tdo_idle,
+                                &d.loopback_hi, &d.loopback_lo);
+        /* pin_probe left TCK/TDI low; get back to a clean reset */
+        h->transport->reset(h->transport);
+    }
+
+    /* Raw IDCODE (after reset the IDCODE reg is the default DR) */
+    uint64_t idcode = 0;
+    err = shift_dr_val(h, 0xFFFFFFFFu, &idcode, 32);
+    if (err != ESP_OK) return err;
+    d.idcode_raw = (uint32_t)idcode;
+
+    /* TDO activity: clock out 64 more bits and count how many read as 1.
+     * 0 ones  -> TDO stuck low (held low / wrong pin / target in reset)
+     * 64 ones -> TDO stuck high (floating; TDO not connected, pull-up wins)
+     * mixed   -> the target is driving real data back. */
+    uint8_t tdi64[8], tdo64[8] = {0};
+    memset(tdi64, 0xFF, sizeof(tdi64));
+    err = h->transport->shift_dr(h->transport, tdi64, tdo64, 64);
+    if (err != ESP_OK) return err;
+    int ones = 0;
+    for (int i = 0; i < 64; i++)
+        ones += (tdo64[i / 8] >> (i % 8)) & 1;
+    d.tdo_activity_ones = ones;
+
+    const char *tdo_diag =
+        !d.pin_probe_ok        ? "(no pin probe on this backend)" :
+        d.tdo_idle < 0         ? "" :
+        (d.tdo_idle == 1 && ones == 64) ? "TDO floating HIGH -> TDO wire not connected?" :
+        (d.tdo_idle == 0 && ones == 0)  ? "TDO stuck LOW -> wrong pin / shorted / target held in reset?" :
+        "TDO toggling -> target is responding";
+
+    ESP_LOGW(TAG, "=== JTAG DIAGNOSTIC ===");
+    ESP_LOGW(TAG, "  IDCODE raw        : 0x%08lx", (unsigned long)d.idcode_raw);
+    ESP_LOGW(TAG, "  TDO idle level    : %d", d.tdo_idle);
+    ESP_LOGW(TAG, "  TDO activity (1s) : %d / 64   %s", ones, tdo_diag);
+    if (d.pin_probe_ok)
+        ESP_LOGW(TAG, "  TDI->TDO loopback : drive1=%d drive0=%d  %s",
+                 d.loopback_hi, d.loopback_lo,
+                 (d.loopback_hi == 1 && d.loopback_lo == 0)
+                     ? "PINS OK (jumper present)"
+                     : "no change (no TDI->TDO jumper, or input pin not reading)");
+    ESP_LOGW(TAG, "=======================");
+
+    h->transport->reset(h->transport);
+    if (out) *out = d;
     return ESP_OK;
 }
 
