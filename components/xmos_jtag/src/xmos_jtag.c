@@ -575,18 +575,20 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
         ESP_LOGW(TAG, "Unknown IDCODE: 0x%08lx", (unsigned long)idcode);
     }
 
-    /* Self-test the mux-open register path: read the system switch's JTAG
-     * device-ID register (XS1_SSWITCH_JTAG_DEVICE_ID_NUM = 0x9).  A value
-     * matching the IDCODE confirms SETMUX + 14-bit register access work
-     * end-to-end on this board; 0x0 or 0xFFFFFFFF means the mux-open path
-     * (not just detection) is the problem -- which isolates a "failed to
-     * enter debug mode" to wiring/framing vs. core state. */
-    uint32_t sw_id = 0;
-    if (xmos_jtag_read_reg(h, -1, XMOS_SSWITCH_JTAG_DEVICE_ID, &sw_id) == ESP_OK) {
-        ESP_LOGI(TAG, "Mux-open self-test: SSWITCH device-id (reg 0x9) = 0x%08lx%s",
-                 (unsigned long)sw_id,
-                 (sw_id == 0 || sw_id == 0xFFFFFFFFu)
-                     ? "  <-- register access NOT working" : "");
+    /* Self-test the mux-open register path the way debug/RAM/flash use it:
+     * read tile 0's PSWITCH device-id (reg 0x0) through the xCORE TAP.  A
+     * non-zero value confirms SETMUX + the 14-bit register framing work.
+     * NOTE: read the *tile* (PSWITCH), not the system switch -- on XS2 the
+     * SSWITCH read uses a slightly different chain prefix and can return 0
+     * even when the tile path (which debug entry, memory and flash all use)
+     * works fine, so a SSWITCH=0 here is NOT a failure. */
+    uint32_t ps_id = 0;
+    if (xmos_jtag_read_reg(h, 0, XMOS_PSWITCH_DEVICE_ID0, &ps_id) == ESP_OK) {
+        bool dead = (ps_id == 0 || ps_id == 0xFFFFFFFFu);
+        ESP_LOGI(TAG, "Mux-open self-test: tile0 PSWITCH device-id (reg 0x0) "
+                 "= 0x%08lx  %s", (unsigned long)ps_id,
+                 dead ? "<-- xCORE register access NOT working"
+                      : "(xCORE register access OK)");
     }
     /* Leave the chain closed for whatever runs next */
     mux_select(h, XMOS_MUX_NC);
