@@ -601,8 +601,14 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
      * SSWITCH read uses a slightly different chain prefix and can return 0
      * even when the tile path (which debug entry, memory and flash all use)
      * works fine, so a SSWITCH=0 here is NOT a failure. */
+    /* The first switch-register read after a chain reset returns the previous
+     * transaction's data (typically 0) -- the switch-read pipeline is delayed
+     * by one. Prime with a throwaway read, then read the real value, so a
+     * single Identify reports register access and the tile count correctly
+     * (otherwise the first scan reads 0 and the second reads OK). */
     uint32_t ps_id = 0;
     bool tile0_ok = false;
+    xmos_jtag_read_reg(h, 0, XMOS_PSWITCH_DEVICE_ID0, &ps_id);   /* prime */
     if (xmos_jtag_read_reg(h, 0, XMOS_PSWITCH_DEVICE_ID0, &ps_id) == ESP_OK) {
         tile0_ok = (ps_id != 0 && ps_id != 0xFFFFFFFFu);
         ESP_LOGI(TAG, "Mux-open self-test: tile0 PSWITCH device-id (reg 0x0) "
@@ -621,6 +627,7 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
         uint8_t found = 1;
         for (uint8_t t = 1; t < chip_info->num_tiles; t++) {
             uint32_t id = 0;
+            xmos_jtag_read_reg(h, t, XMOS_PSWITCH_DEVICE_ID0, &id);   /* prime */
             if (xmos_jtag_read_reg(h, t, XMOS_PSWITCH_DEVICE_ID0, &id) == ESP_OK
                 && id != 0 && id != 0xFFFFFFFFu)
                 found = t + 1;          /* tiles are numbered contiguously */
