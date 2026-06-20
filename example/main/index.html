@@ -3,435 +3,803 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>JTAG Programmer</title>
+<title>XMOS JTAG Flasher</title>
 <style>
   :root {
-    --bg: #111; --surface: #1a1a1a; --surface2: #222; --border: #333;
-    --text: #d4d4d4; --text2: #888; --text3: #555;
-    --accent: #6ea8fe; --accent-dim: rgba(110,168,254,0.1);
-    --ok: #7ec88b; --ok-dim: rgba(126,200,139,0.1);
-    --warn: #e0a458; --warn-dim: rgba(224,164,88,0.1);
-    --err: #e06060; --err-dim: rgba(224,96,96,0.1);
-    --purple: #c08cff; --purple-dim: rgba(200,140,255,0.12);
-    --radius: 4px;
+    --bg: #0e0f12; --surface: #16181d; --surface2: #1d2026; --surface3: #23272f;
+    --border: #2a2e37; --border2: #353b46;
+    --text: #d7dae0; --text2: #8b929e; --text3: #5b626d;
+    --accent: #6ea8fe; --accent-dim: rgba(110,168,254,0.12);
+    --ok: #6fcf8e; --ok-dim: rgba(111,207,142,0.12);
+    --warn: #e0b15a; --warn-dim: rgba(224,177,90,0.12);
+    --err: #e57373; --err-dim: rgba(229,115,115,0.12);
+    --purple: #c08cff; --purple-dim: rgba(192,140,255,0.14);
+    --radius: 7px; --radius-sm: 4px;
+    --mono: 'SF Mono','JetBrains Mono','Cascadia Code',ui-monospace,monospace;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
+  html { font-size: 16px; }
   body {
-    font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+    font-family: 'Inter',-apple-system,'Segoe UI',system-ui,sans-serif;
     background: var(--bg); color: var(--text);
-    min-height: 100vh; padding: 1.5rem 1rem;
-    -webkit-font-smoothing: antialiased;
+    min-height: 100vh; -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
   }
-  .wrap { max-width: 680px; margin: 0 auto; }
 
-  header { margin-bottom: 1.5rem; }
-  header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.02em; }
+  /* ---- Top bar ---- */
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; padding: 0.7rem 1.1rem;
+    background: rgba(14,15,18,0.85); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: 0.6rem; }
+  .logo {
+    font: 700 0.62rem/1 var(--mono); letter-spacing: 0.06em;
+    color: var(--accent); border: 1px solid var(--border2);
+    background: var(--accent-dim); padding: 0.38rem 0.42rem; border-radius: var(--radius-sm);
+  }
+  .brand .title { font-size: 0.92rem; font-weight: 650; letter-spacing: -0.01em; }
+  .brand .subtitle { font-size: 0.64rem; color: var(--text3); letter-spacing: 0.02em; }
+  .conn { display: flex; align-items: center; gap: 0.5rem; font-size: 0.72rem; color: var(--text2); }
+  .conn .host { color: var(--text3); font-family: var(--mono); font-size: 0.66rem; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text3); flex-shrink: 0; }
+  .dot.on  { background: var(--ok);  box-shadow: 0 0 0 3px var(--ok-dim); }
+  .dot.off { background: var(--err); box-shadow: 0 0 0 3px var(--err-dim); }
+  .dot.wait { background: var(--warn); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
+  /* ---- Layout ---- */
+  .app {
+    max-width: 1140px; margin: 0 auto; padding: 1.1rem;
+    display: grid; gap: 0.85rem; grid-template-columns: 1fr;
+  }
+  .col { display: grid; gap: 0.85rem; align-content: start; }
+  @media (min-width: 940px) {
+    .app { grid-template-columns: minmax(0,1.35fr) minmax(0,1fr); align-items: start; }
+    .col-side { position: sticky; top: 4rem; }
+  }
+
+  /* ---- Cards ---- */
   .card {
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 1rem 1.1rem; margin-bottom: 0.75rem;
+    border-radius: var(--radius); padding: 0.95rem 1.05rem;
   }
   .card-hdr {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 0.7rem;
+    gap: 0.5rem; margin-bottom: 0.85rem;
   }
   .card-hdr h2 {
-    font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.08em; color: var(--text3);
+    font-size: 0.66rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.09em; color: var(--text3);
   }
+  .hdr-actions { display: flex; gap: 0.35rem; align-items: center; }
+
   .tag {
-    font-size: 0.55rem; padding: 0.1rem 0.35rem; border-radius: 2px;
-    font-weight: 500; display: inline-block;
+    font-size: 0.6rem; padding: 0.14rem 0.45rem; border-radius: 999px;
+    font-weight: 600; display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap;
   }
   .tag-ok { background: var(--ok-dim); color: var(--ok); }
   .tag-warn { background: var(--warn-dim); color: var(--warn); }
   .tag-err { background: var(--err-dim); color: var(--err); }
   .tag-info { background: var(--accent-dim); color: var(--accent); }
+  .tag-mute { background: var(--surface3); color: var(--text3); }
 
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1rem; }
+  /* ---- Fields ---- */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem 1rem; }
   .field label {
     display: block; font-size: 0.6rem; color: var(--text3);
-    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.1rem;
+    text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.15rem;
   }
-  .field .val {
-    font-size: 0.85rem; font-family: 'SF Mono', 'Cascadia Code', monospace;
-    color: var(--text);
-  }
-  .field .val.mono { color: var(--accent); }
+  .field .val { font-size: 0.86rem; font-family: var(--mono); color: var(--text); word-break: break-all; }
+  .field .val.accent { color: var(--accent); }
   .field .val.ok { color: var(--ok); }
   .field .val.err { color: var(--err); }
+  .field .val.mute { color: var(--text3); }
 
-  .btn-row { display: flex; gap: 0.4rem; margin-top: 0.7rem; flex-wrap: wrap; }
+  /* ---- Buttons / selects ---- */
+  .btn-row { display: flex; gap: 0.45rem; flex-wrap: wrap; }
   button {
-    display: inline-flex; align-items: center; gap: 0.3rem;
-    padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: var(--radius);
-    background: var(--surface2); color: var(--text2); font-size: 0.75rem;
-    cursor: pointer; transition: all 0.15s; font-family: inherit;
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem;
+    padding: 0.45rem 0.85rem; border: 1px solid var(--border2); border-radius: var(--radius-sm);
+    background: var(--surface2); color: var(--text); font-size: 0.76rem; font-weight: 500;
+    cursor: pointer; transition: all 0.13s; font-family: inherit; white-space: nowrap;
   }
-  button:hover { border-color: var(--text3); color: var(--text); }
-  button:disabled { opacity: 0.3; cursor: not-allowed; }
-  button.primary { background: var(--accent-dim); border-color: rgba(110,168,254,0.3); color: var(--accent); }
-  button.primary:hover { background: rgba(110,168,254,0.2); }
+  button:hover:not(:disabled) { border-color: var(--text3); background: var(--surface3); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b0d10; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: #84b6ff; border-color: #84b6ff; }
+  button.danger { background: var(--err-dim); border-color: rgba(229,115,115,0.35); color: var(--err); }
+  button.danger:hover:not(:disabled) { background: rgba(229,115,115,0.22); }
+  button.sm { padding: 0.28rem 0.55rem; font-size: 0.68rem; }
 
+  label.lbl { display:block; font-size: 0.6rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+
+  /* Segmented control */
+  .seg { display: flex; border: 1px solid var(--border2); border-radius: var(--radius-sm); overflow: hidden; }
+  .seg button {
+    flex: 1 1 0; min-width: 0; border: 0; border-right: 1px solid var(--border2); border-radius: 0;
+    background: var(--surface2); color: var(--text2); padding: 0.5rem 0.4rem; gap: 0.1rem;
+    display: flex; flex-direction: column; align-items: center; line-height: 1.25;
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button b { font-size: 0.76rem; font-weight: 600; }
+  .seg button small { font-size: 0.6rem; color: var(--text3); }
+  .seg button.active { background: var(--accent-dim); color: var(--accent); }
+  .seg button.active small { color: var(--accent); opacity: 0.8; }
+  .seg button.active.danger { background: var(--err-dim); color: var(--err); }
+  .seg button:hover:not(.active):not(:disabled) { background: var(--surface3); color: var(--text); }
+  .seg button:disabled { opacity: 0.4; cursor: not-allowed; }
   select {
-    padding: 0.35rem 0.6rem; border: 1px solid var(--border); border-radius: var(--radius);
-    background: var(--surface2); color: var(--text); font-size: 0.75rem;
+    width: 100%; padding: 0.45rem 1.6rem 0.45rem 0.6rem;
+    border: 1px solid var(--border2); border-radius: var(--radius-sm);
+    background: var(--surface2); color: var(--text); font-size: 0.78rem;
     font-family: inherit; cursor: pointer; appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23888'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 0.5rem center;
-    padding-right: 1.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%238b929e'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 0.55rem center;
   }
   select:hover { border-color: var(--text3); }
 
-  .chain { display: flex; align-items: center; gap: 0; overflow-x: auto; padding: 0.5rem 0; }
-  .chain-wire { width: 28px; height: 1px; background: var(--border); flex-shrink: 0; }
-  .chain-wire.tdi { background: var(--accent); opacity: 0.5; }
-  .chain-wire.tdo { background: var(--ok); opacity: 0.5; }
-  .chain-pin { font-size: 0.55rem; color: var(--text3); flex-shrink: 0; font-weight: 600; letter-spacing: 0.04em; }
+  /* ---- Chain diagram ---- */
+  .chain { display: flex; align-items: center; overflow-x: auto; padding: 0.5rem 0 0.25rem; }
+  .chain-wire { width: 26px; height: 2px; background: var(--border2); flex-shrink: 0; }
+  .chain-wire.tdi { background: linear-gradient(90deg,transparent,var(--accent)); }
+  .chain-wire.tdo { background: linear-gradient(90deg,var(--ok),transparent); }
+  .chain-pin { font-size: 0.56rem; color: var(--text3); flex-shrink: 0; font-weight: 700; letter-spacing: 0.05em; }
   .chain-dev {
-    flex-shrink: 0; border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 0.4rem 0.6rem; text-align: center; min-width: 90px;
-    background: var(--surface2); transition: border-color 0.2s;
+    flex-shrink: 0; border: 1px solid var(--border2); border-radius: var(--radius-sm);
+    padding: 0.45rem 0.65rem; text-align: center; min-width: 98px; background: var(--surface2);
   }
-  .chain-dev:hover { border-color: var(--text3); }
-  .chain-dev .dev-name { font-size: 0.7rem; font-weight: 600; color: var(--text); white-space: nowrap; }
-  .chain-dev .dev-id { font-size: 0.6rem; font-family: monospace; color: var(--accent); margin-top: 0.15rem; }
-  .chain-dev .dev-meta { font-size: 0.55rem; color: var(--text3); }
+  .chain-dev .dev-name { font-size: 0.72rem; font-weight: 650; white-space: nowrap; }
+  .chain-dev .dev-id { font-size: 0.62rem; font-family: var(--mono); color: var(--accent); margin-top: 0.1rem; }
+  .chain-dev .dev-meta { font-size: 0.56rem; color: var(--text3); margin-top: 0.05rem; }
   .chain-dev.highlight { border-color: var(--accent); background: var(--accent-dim); }
-  .chain-dev.unknown { border-style: dashed; }
+  .chain-dev.unknown { border-style: dashed; color: var(--text2); }
 
+  /* ---- Dropzone ---- */
   .drop {
-    border: 1px dashed var(--border); border-radius: var(--radius);
-    padding: 1.5rem; text-align: center; cursor: pointer; transition: 0.2s;
+    border: 1.5px dashed var(--border2); border-radius: var(--radius);
+    padding: 1.4rem 1rem; text-align: center; cursor: pointer; transition: 0.18s;
     position: relative; background: var(--surface2);
   }
   .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-dim); }
   .drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-  .drop .label { font-size: 0.8rem; color: var(--text2); }
-  .drop .hint { font-size: 0.65rem; color: var(--text3); margin-top: 0.25rem; }
+  .drop .label { font-size: 0.82rem; color: var(--text2); }
+  .drop .label b { color: var(--accent); font-weight: 600; }
+  .drop .hint { font-size: 0.66rem; color: var(--text3); margin-top: 0.3rem; font-family: var(--mono); }
 
-  .pbar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 0.5rem; }
-  .pbar .fill { height: 100%; border-radius: 2px; transition: width 0.3s; width: 0%; background: var(--accent); }
-  .pbar .fill.done { background: var(--ok); }
-  .pbar .fill.error { background: var(--err); }
-
-  .status { font-size: 0.7rem; color: var(--text2); margin-top: 0.35rem; font-family: monospace; }
-
-  .bsr-bits { font-family: monospace; font-size: 0.65rem; line-height: 1.7; word-break: break-all; }
-  .bsr-hex { font-family: monospace; font-size: 0.7rem; color: var(--accent); word-break: break-all; }
-
-  .ftag { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 2px; font-size: 0.6rem; font-weight: 600; }
+  .ftag { display: inline-block; padding: 0.12rem 0.45rem; border-radius: var(--radius-sm); font-size: 0.62rem; font-weight: 700; }
   .ftag.xe { background: var(--accent-dim); color: var(--accent); }
   .ftag.elf { background: var(--ok-dim); color: var(--ok); }
   .ftag.bin { background: var(--warn-dim); color: var(--warn); }
   .ftag.svf { background: var(--purple-dim); color: var(--purple); }
 
-  .sep { height: 1px; background: var(--border); margin: 0.6rem 0; }
+  /* ---- Progress ---- */
+  .prog-wrap { margin-top: 0.85rem; }
+  .prog-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.35rem; }
+  .prog-label { font-size: 0.72rem; color: var(--text2); font-family: var(--mono); }
+  .prog-pct { font-size: 0.78rem; font-weight: 700; color: var(--accent); font-family: var(--mono); }
+  .pbar { height: 6px; background: var(--surface3); border-radius: 999px; overflow: hidden; }
+  .pbar .fill { height: 100%; border-radius: 999px; width: 0%; background: var(--accent); transition: width 0.3s ease; }
+  .pbar .fill.indet { width: 35% !important; animation: indet 1.1s ease-in-out infinite; }
+  @keyframes indet { 0%{margin-left:-35%} 100%{margin-left:100%} }
+  .pbar .fill.done { background: var(--ok); }
+  .pbar .fill.error { background: var(--err); }
 
+  /* ---- Diagnostics ---- */
+  .diag-verdict { font-size: 0.74rem; padding: 0.5rem 0.65rem; border-radius: var(--radius-sm); margin-bottom: 0.7rem; line-height: 1.45; }
+  .diag-verdict.ok { background: var(--ok-dim); color: var(--ok); }
+  .diag-verdict.warn { background: var(--warn-dim); color: var(--warn); }
+  .diag-verdict.err { background: var(--err-dim); color: var(--err); }
+
+  /* ---- Pinout ---- */
+  .pinmap { display: grid; grid-template-columns: repeat(2,1fr); gap: 0.5rem; position: relative; overflow: hidden; padding: 2px; }
+  .pinmap.scanning::after {
+    content:''; position:absolute; top:0; bottom:0; left:-45%; width:45%;
+    background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
+    animation: sweep 0.9s linear infinite; pointer-events:none;
+  }
+  @keyframes sweep { to { left: 100%; } }
+  .pin {
+    display:flex; align-items:center; justify-content:space-between; gap:0.5rem;
+    padding:0.45rem 0.65rem; border:1px solid var(--border2); border-radius:var(--radius-sm);
+    background: var(--surface2); transition: opacity 0.25s, border-color 0.25s;
+  }
+  .pin .pin-sig { font:700 0.68rem/1 var(--mono); letter-spacing:0.05em; color: var(--text2); }
+  .pin .pin-gpio { font:0.74rem/1 var(--mono); color: var(--text3); }
+  .pin.sig-tck { border-color: rgba(110,168,254,.45); } .pin.sig-tck .pin-sig{ color:var(--accent); }
+  .pin.sig-tms { border-color: rgba(192,140,255,.45); } .pin.sig-tms .pin-sig{ color:var(--purple); }
+  .pin.sig-tdi { border-color: rgba(224,177,90,.45); }  .pin.sig-tdi .pin-sig{ color:var(--warn); }
+  .pin.sig-tdo { border-color: rgba(111,207,142,.45); } .pin.sig-tdo .pin-sig{ color:var(--ok); }
+  .pinmap.scanning .pin { opacity: 0.5; }
+  .pin.changed { animation: flashpin 1s ease; }
+  @keyframes flashpin { 0%,40% { background: var(--ok-dim); border-color: var(--ok); } }
+
+  /* ---- Console ---- */
+  .console-card { display: flex; flex-direction: column; }
+  .console {
+    font-family: var(--mono); font-size: 0.7rem; line-height: 1.55;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 0.6rem 0.7rem; height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .console .line { display: flex; gap: 0.55rem; }
+  .console .ts { color: var(--text3); flex-shrink: 0; }
+  .console .msg.info { color: var(--text2); }
+  .console .msg.ok { color: var(--ok); }
+  .console .msg.warn { color: var(--warn); }
+  .console .msg.err { color: var(--err); }
+  .console .msg.cmd { color: var(--accent); }
+  .console::-webkit-scrollbar { width: 8px; }
+  .console::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+  .bsr-hex { font-family: var(--mono); font-size: 0.72rem; color: var(--accent); word-break: break-all; }
+  .bsr-bits { font-family: var(--mono); font-size: 0.66rem; line-height: 1.8; word-break: break-all; margin-top: 0.35rem; }
+  .muted { font-size: 0.72rem; color: var(--text3); }
   .hidden { display: none !important; }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-  <header>
-    <h1>JTAG Programmer</h1>
-  </header>
-
-  <!-- Device -->
-  <div class="card">
-    <div class="card-hdr">
-      <h2>Device</h2>
-      <span class="tag tag-info" id="dev-status">--</span>
-    </div>
-    <div class="grid">
-      <div class="field"><label>IDCODE</label><div class="val mono" id="idcode">--</div></div>
-      <div class="field"><label>Family</label><div class="val" id="family">--</div></div>
-      <div class="field"><label>Tiles</label><div class="val" id="tiles">--</div></div>
-      <div class="field"><label>Revision</label><div class="val" id="revision">--</div></div>
-    </div>
-    <div class="btn-row">
-      <button class="primary" onclick="identify()">Scan Chain</button>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">JTAG</div>
+    <div>
+      <div class="title">XMOS JTAG Flasher</div>
+      <div class="subtitle">xCORE-200 / xcore.ai &middot; iCE40 &middot; generic JTAG</div>
     </div>
   </div>
-
-  <!-- Chain -->
-  <div class="card hidden" id="chain-card">
-    <div class="card-hdr"><h2>JTAG Chain</h2><span class="tag tag-info" id="chain-count">0</span></div>
-    <div id="chain-view"></div>
+  <div class="conn">
+    <span class="dot wait" id="conn-dot"></span>
+    <span id="conn-text">connecting</span>
+    <span class="host" id="conn-host"></span>
   </div>
+</header>
 
-  <!-- Boundary Scan -->
-  <div class="card hidden" id="bscan-card">
-    <div class="card-hdr"><h2>Boundary Scan</h2><span class="tag tag-info" id="bsr-len">--</span></div>
-    <div class="btn-row" style="margin-top:0">
-      <button onclick="bscan()">Capture</button>
-      <button onclick="bscanAuto()" id="btn-auto">Auto</button>
-    </div>
-    <div id="bsr-display" class="hidden" style="margin-top:0.5rem">
-      <div class="bsr-hex" id="bsr-hex"></div>
-      <div class="bsr-bits" id="bsr-bits" style="margin-top:0.3rem"></div>
-    </div>
-  </div>
+<main class="app">
+  <!-- ================= LEFT COLUMN ================= -->
+  <section class="col col-main">
 
-  <!-- Firmware Upload -->
-  <div class="card">
-    <div class="card-hdr"><h2>Firmware</h2></div>
-    <div class="drop" id="dropzone">
-      <!-- No accept filter: some OS file pickers grey out unregistered
-           extensions like .xe.  The server classifies by content, so allow
-           any file rather than block the one the user needs. -->
-      <input type="file" id="fileInput">
-      <div class="label">Drop firmware file</div>
-      <div class="hint">.xe .bin .elf .svf</div>
-    </div>
-    <div id="fw-info" class="hidden" style="margin-top:0.6rem">
+    <!-- Device -->
+    <div class="card">
+      <div class="card-hdr">
+        <h2>Device</h2>
+        <span class="tag tag-mute" id="dev-status">unknown</span>
+      </div>
       <div class="grid">
-        <div class="field"><label>File</label><div class="val" id="fw-name">--</div></div>
-        <div class="field"><label>Type</label><div class="val" id="fw-type">--</div></div>
-        <div class="field"><label>Size</label><div class="val" id="fw-size">--</div></div>
-        <div class="field"><label>Code</label><div class="val" id="fw-code">--</div></div>
-        <div class="field"><label>Tiles</label><div class="val" id="fw-tiles">--</div></div>
-        <div class="field"><label>Segments</label><div class="val" id="fw-segs">--</div></div>
-        <div class="field"><label>Entry T0</label><div class="val mono" id="fw-entry0">--</div></div>
-        <div class="field"><label>Entry T1</label><div class="val mono" id="fw-entry1">--</div></div>
+        <div class="field"><label>IDCODE</label><div class="val accent" id="idcode">--</div></div>
+        <div class="field"><label>Family</label><div class="val" id="family">--</div></div>
+        <div class="field"><label>Tiles</label><div class="val" id="tiles">--</div></div>
+        <div class="field"><label>Revision</label><div class="val" id="revision">--</div></div>
+      </div>
+      <div class="muted" id="chip-desc" style="margin-top:0.6rem"></div>
+      <div class="btn-row" style="margin-top:0.85rem">
+        <button class="primary" id="btn-identify">Identify &amp; scan</button>
+        <button id="btn-diag">Diagnostics</button>
+        <button id="btn-autopins">Auto-detect pins</button>
       </div>
     </div>
-  </div>
 
-  <!-- Program -->
-  <div class="card">
-    <div class="card-hdr"><h2>Program</h2></div>
-    <div style="display:flex; gap:0.6rem; align-items:end; flex-wrap:wrap">
-      <div class="field">
-        <label>Target</label>
-        <select id="sel-target">
-          <option value="xmos">XMOS xCORE</option>
-          <option value="ice40">Lattice iCE40</option>
-          <option value="svf">SVF (generic JTAG)</option>
-        </select>
-      </div>
-      <div class="field" id="method-field">
-        <label>Method</label>
-        <select id="sel-method">
-          <option value="ram">Load to RAM (JTAG)</option>
-          <option value="flash">Write SPI Flash</option>
-          <option value="cram">Load to CRAM (SPI)</option>
-        </select>
-      </div>
+    <!-- Chain -->
+    <div class="card hidden" id="chain-card">
+      <div class="card-hdr"><h2>JTAG Chain</h2><span class="tag tag-info" id="chain-count">0</span></div>
+      <div id="chain-view"></div>
     </div>
-    <div class="btn-row">
-      <button class="primary" id="btn-go" onclick="program()" disabled>Program</button>
-    </div>
-    <div class="pbar hidden" id="pbar"><div class="fill" id="pfill"></div></div>
-    <div class="status" id="status"></div>
-  </div>
 
-</div>
+    <!-- Firmware -->
+    <div class="card">
+      <div class="card-hdr">
+        <h2>Firmware</h2>
+        <span class="tag tag-mute hidden" id="fw-tag">none</span>
+      </div>
+      <div class="drop" id="dropzone">
+        <input type="file" id="fileInput">
+        <div class="label">Drop a file here or <b>browse</b></div>
+        <div class="hint">.xe &middot; .bin &middot; .elf &middot; .svf</div>
+      </div>
+      <div id="fw-info" class="hidden" style="margin-top:0.8rem">
+        <div class="grid">
+          <div class="field"><label>File</label><div class="val" id="fw-name">--</div></div>
+          <div class="field"><label>Type</label><div class="val" id="fw-type">--</div></div>
+          <div class="field"><label>Size</label><div class="val" id="fw-size">--</div></div>
+          <div class="field"><label>Code</label><div class="val" id="fw-code">--</div></div>
+          <div class="field"><label>Tiles</label><div class="val" id="fw-tiles">--</div></div>
+          <div class="field"><label>Segments</label><div class="val" id="fw-segs">--</div></div>
+          <div class="field"><label>Entry T0</label><div class="val accent" id="fw-entry0">--</div></div>
+          <div class="field"><label>Entry T1</label><div class="val accent" id="fw-entry1">--</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Program -->
+    <div class="card">
+      <div class="card-hdr"><h2>Program</h2></div>
+      <label class="lbl">Device</label>
+      <div class="seg" id="seg-target">
+        <button data-t="xmos"><b>XMOS xCORE</b><small>xCORE-200 / xcore.ai</small></button>
+        <button data-t="ice40"><b>iCE40 FPGA</b><small>Lattice SPI</small></button>
+        <button data-t="svf"><b>Generic JTAG</b><small>SVF playback</small></button>
+      </div>
+      <label class="lbl" id="method-label" style="margin-top:0.75rem">Method</label>
+      <div class="seg" id="seg-method"></div>
+      <p class="muted" id="method-hint" style="margin-top:0.55rem"></p>
+      <div class="btn-row" style="margin-top:0.7rem">
+        <button class="primary" id="btn-go" disabled>Program</button>
+      </div>
+      <div class="prog-wrap hidden" id="prog">
+        <div class="prog-top">
+          <span class="prog-label" id="prog-label">Idle</span>
+          <span class="prog-pct" id="prog-pct"></span>
+        </div>
+        <div class="pbar"><div class="fill" id="pfill"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= RIGHT COLUMN ================= -->
+  <section class="col col-side">
+
+    <!-- Pinout -->
+    <div class="card" id="pinout-card">
+      <div class="card-hdr"><h2>Pinout</h2><span class="tag tag-mute" id="pin-state">--</span></div>
+      <div class="pinmap" id="pinmap"></div>
+      <p class="muted" id="pin-note" style="margin-top:0.55rem"></p>
+    </div>
+
+    <!-- Diagnostics -->
+    <div class="card hidden" id="diag-card">
+      <div class="card-hdr"><h2>Diagnostics</h2><span class="tag tag-mute" id="diag-tag">--</span></div>
+      <div class="diag-verdict" id="diag-verdict"></div>
+      <div class="grid">
+        <div class="field"><label>IDCODE (raw)</label><div class="val accent" id="d-idcode">--</div></div>
+        <div class="field"><label>TDO idle</label><div class="val" id="d-tdo">--</div></div>
+        <div class="field"><label>TDO activity</label><div class="val" id="d-act">--</div></div>
+        <div class="field"><label>TDI&rarr;TDO loop</label><div class="val" id="d-loop">--</div></div>
+      </div>
+    </div>
+
+    <!-- Boundary scan -->
+    <div class="card hidden" id="bscan-card">
+      <div class="card-hdr">
+        <h2>Boundary Scan</h2>
+        <div class="hdr-actions">
+          <span class="tag tag-info" id="bsr-len">--</span>
+          <button class="sm" id="btn-bscan">Capture</button>
+          <button class="sm" id="btn-auto">Auto</button>
+        </div>
+      </div>
+      <div id="bsr-display" class="hidden">
+        <div class="bsr-hex" id="bsr-hex"></div>
+        <div class="bsr-bits" id="bsr-bits"></div>
+      </div>
+      <div class="muted" id="bsr-empty">Capture the I/O pin states (needs an identified device).</div>
+    </div>
+
+    <!-- Console -->
+    <div class="card console-card">
+      <div class="card-hdr">
+        <h2>Activity Log</h2>
+        <button class="sm" id="btn-clear">Clear</button>
+      </div>
+      <div class="console" id="console"></div>
+    </div>
+  </section>
+</main>
 
 <script>
+"use strict";
 const $ = id => document.getElementById(id);
-const fmt = n => n >= 1048576 ? (n/1048576).toFixed(1)+' MB' : n >= 1024 ? (n/1024).toFixed(1)+' KB' : n+' B';
-const show = id => $(id).classList.remove('hidden');
-let uploadedType = '';
+const fmt = n => (n == null ? '--' : n >= 1048576 ? (n/1048576).toFixed(2)+' MB' : n >= 1024 ? (n/1024).toFixed(1)+' KB' : n+' B');
 
-/* Target/method logic */
-const methods = {
-  xmos:  [{v:'ram',   l:'Load to RAM (JTAG)'}, {v:'flash', l:'Write SPI Flash (JTAG)'}],
-  ice40: [{v:'cram',  l:'Load to CRAM (SPI)'}, {v:'flash', l:'Write SPI Flash'}],
-  svf:   [{v:'svf',   l:'Play SVF file'}],
-};
-
-$('sel-target').addEventListener('change', updateMethods);
-function updateMethods() {
-  const t = $('sel-target').value;
-  const sel = $('sel-method');
-  sel.innerHTML = '';
-  methods[t].forEach(m => {
-    const o = document.createElement('option');
-    o.value = m.v; o.textContent = m.l;
-    sel.appendChild(o);
-  });
-  $('method-field').classList.toggle('hidden', t === 'svf');
-  updateGoButton();
+/* ---------------- Activity log ---------------- */
+const con = $('console');
+function pad(n){ return n < 10 ? '0'+n : ''+n; }
+function log(level, msg) {
+  const d = new Date();
+  const ts = pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+  const line = document.createElement('div');
+  line.className = 'line';
+  line.innerHTML = '<span class="ts">'+ts+'</span><span class="msg '+level+'"></span>';
+  line.querySelector('.msg').textContent = msg;
+  con.appendChild(line);
+  con.scrollTop = con.scrollHeight;
+  while (con.childElementCount > 500) con.removeChild(con.firstChild);
 }
+$('btn-clear').onclick = () => { con.innerHTML = ''; log('info','Log cleared.'); };
 
-function updateGoButton() {
-  const hasFile = !$('fw-info').classList.contains('hidden');
-  const t = $('sel-target').value;
-  /* SVF requires SVF file, others require non-SVF */
-  if (t === 'svf') {
-    $('btn-go').disabled = !hasFile || uploadedType !== 'svf';
-  } else {
-    $('btn-go').disabled = !hasFile || uploadedType === 'svf';
+/* ---------------- API helper (robust) ---------------- */
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const t = await res.text(); if (t) detail = t.replace(/<[^>]*>/g,'').trim() || detail; } catch(e) {}
+    throw new Error('HTTP ' + res.status + ': ' + detail);
   }
+  const ct = res.headers.get('content-type') || '';
+  return ct.includes('json') ? res.json() : res.text();
 }
 
-/* Auto-select target based on uploaded file type */
-function autoSelectTarget(type) {
-  if (type === 'svf') {
-    $('sel-target').value = 'svf';
-  } else if (type === 'xe' || type === 'elf') {
-    $('sel-target').value = 'xmos';
-  }
-  updateMethods();
+/* ---------------- Connection heartbeat ---------------- */
+let online = null, busy = false, opActive = false, lastOpStatus = '';
+function setConn(state) {
+  const dot = $('conn-dot'), txt = $('conn-text');
+  if (state === 'on')  { dot.className = 'dot on';  txt.textContent = 'online'; }
+  else if (state==='off') { dot.className = 'dot off'; txt.textContent = 'offline'; }
+  else { dot.className = 'dot wait'; txt.textContent = 'connecting'; }
 }
+$('conn-host').textContent = location.host;
 
-/* Scan */
-async function identify() {
+async function tick() {
   try {
-    try { const r = await fetch('/api/chain'); const d = await r.json(); renderChain(d.devices || []); } catch(e) {}
-    const r = await fetch('/api/identify'); const d = await r.json();
+    const st = await api('/api/status');
+    if (online !== true) { online = true; setConn('on'); log('ok','Connected to '+location.host+'.'); loadPins(); maybeAutoIdentify(); }
+    if (opActive) updateProgress(st);
+  } catch(e) {
+    if (online !== false) { online = false; setConn('off'); log('err','Connection lost.'); }
+  }
+}
+
+/* ---------------- Device identify ---------------- */
+let identifiedOk = false, autoTried = false;
+function maybeAutoIdentify() {
+  if (autoTried) return; autoTried = true;
+  identify(true);
+}
+
+async function identify(quiet) {
+  if (busy) return;
+  setBusy(true, 'btn-identify');
+  if (!quiet) log('cmd','identify + scan chain');
+  try {
+    // Chain scan first (non-fatal if it fails).
+    try {
+      const c = await api('/api/chain');
+      renderChain(c.devices || []);
+      if (c.error) log('warn','Chain scan: '+c.error);
+    } catch(e) { log('warn','Chain scan failed: '+e.message); }
+
+    const d = await api('/api/identify');
     $('idcode').textContent = d.idcode;
     $('family').textContent = d.family;
-    $('family').className = 'val' + (d.ok ? ' ok' : ' err');
+    $('family').className = 'val ' + (d.ok ? 'ok' : 'err');
     $('tiles').textContent = d.tiles;
     $('revision').textContent = d.revision;
-    $('dev-status').textContent = d.ok ? 'Connected' : 'No device';
-    $('dev-status').className = 'tag ' + (d.ok ? 'tag-ok' : 'tag-err');
+    identifiedOk = !!d.ok;
+    setTag('dev-status', d.ok ? 'ok' : 'err', d.ok ? 'connected' : 'no device');
+    $('chip-desc').textContent = d.ok ? describeChip(d) : '';
     if (d.ok) {
-      updateGoButton();
-      if (d.bsr_len > 0) { show('bscan-card'); $('bsr-len').textContent = d.bsr_len + ' bits'; }
+      log('ok','Identified '+d.family+' ('+d.idcode+', '+d.tiles+' tile'+(d.tiles==1?'':'s')+').');
+      if (d.bsr_len > 0) { $('bscan-card').classList.remove('hidden'); setTag('bsr-len','info', d.bsr_len+' bits'); }
+    } else {
+      log('warn','No device identified (IDCODE '+d.idcode+'). Run Diagnostics or Auto-detect pins.');
     }
+    updateGoButton();
   } catch(e) {
-    $('family').textContent = 'Error'; $('family').className = 'val err';
-    $('dev-status').textContent = 'Error'; $('dev-status').className = 'tag tag-err';
-  }
+    log('err','Identify failed: '+e.message);
+    setTag('dev-status','err','error');
+  } finally { setBusy(false); }
+}
+
+function describeChip(d) {
+  const f = d.family || '';
+  let info = null;
+  if (f.includes('XS2')) info = {arch:'xCORE-200 (XS2)', ram:'0x40000', mfg:'XMOS', flash:'boot flash writable over JTAG'};
+  else if (f.includes('XS3')) info = {arch:'xcore.ai (XS3)', ram:'0x80000', mfg:'XMOS', flash:'boot flash via JTAG (XS3 stub rebuild) or SPI'};
+  else if (f.includes('XS1')) info = {arch:'XS1', ram:'0x10000', mfg:'XMOS', flash:'SPI'};
+  if (!info) return '';
+  const tiles = d.tiles + (d.tiles==1?' tile':' tiles');
+  return info.mfg+' '+info.arch+' · '+tiles+' · SRAM @ '+info.ram+' · '+info.flash+'.';
 }
 
 function renderChain(devs) {
+  const card = $('chain-card');
   if (!devs || !devs.length) {
-    $('chain-view').innerHTML = '<div style="font-size:0.7rem;color:var(--text3)">No devices detected</div>';
-    show('chain-card'); return;
+    $('chain-view').innerHTML = '<div class="muted">No devices detected on the chain.</div>';
+    setTag('chain-count','mute','0'); card.classList.remove('hidden'); return;
   }
   let h = '<div class="chain"><div class="chain-pin" style="color:var(--accent)">TDI</div><div class="chain-wire tdi"></div>';
-  devs.forEach((d, i) => {
-    const cls = d.name.includes('XMOS') ? 'highlight' : d.name === 'Unknown' ? 'unknown' : '';
-    h += '<div class="chain-dev ' + cls + '">';
-    h += '<div class="dev-name">' + d.name + '</div>';
-    h += '<div class="dev-id">' + d.idcode + '</div>';
-    h += '<div class="dev-meta">' + d.manufacturer + ' / ' + d.part + '</div></div>';
-    if (i < devs.length - 1) h += '<div class="chain-wire"></div>';
+  devs.forEach((d,i) => {
+    const cls = (d.name||'').includes('XMOS') ? 'highlight' : (d.name==='Unknown' ? 'unknown' : '');
+    h += '<div class="chain-dev '+cls+'"><div class="dev-name"></div><div class="dev-id"></div><div class="dev-meta"></div></div>';
+    if (i < devs.length-1) h += '<div class="chain-wire"></div>';
   });
   h += '<div class="chain-wire tdo"></div><div class="chain-pin" style="color:var(--ok)">TDO</div></div>';
   $('chain-view').innerHTML = h;
-  $('chain-count').textContent = devs.length + ' device' + (devs.length > 1 ? 's' : '');
-  show('chain-card');
+  // Fill text via textContent to avoid injection from device strings.
+  const cells = $('chain-view').querySelectorAll('.chain-dev');
+  devs.forEach((d,i) => {
+    cells[i].querySelector('.dev-name').textContent = d.name || 'Unknown';
+    cells[i].querySelector('.dev-id').textContent = d.idcode;
+    cells[i].querySelector('.dev-meta').textContent = (d.manufacturer||'')+' / '+(d.part||'');
+  });
+  setTag('chain-count','info', devs.length+' device'+(devs.length>1?'s':''));
+  card.classList.remove('hidden');
+  log('info','Chain: '+devs.map(d=>d.name||d.idcode).join(' -> '));
 }
 
-/* Boundary scan */
-let autoTimer = null;
-async function bscan() {
+/* ---------------- Diagnostics ---------------- */
+async function runDiag() {
+  if (busy) return;
+  setBusy(true, 'btn-diag');
+  log('cmd','run JTAG diagnostics');
   try {
-    const r = await fetch('/api/bscan'); const d = await r.json();
-    show('bsr-display'); $('bsr-hex').textContent = d.hex;
-    let h = ''; const b = d.bits;
-    for (let i = 0; i < b.length; i++) {
-      const c = b[i] === '1' ? 'var(--ok)' : 'var(--border)';
-      h += '<span title="bit ' + (b.length-1-i) + '" style="color:' + c + '">' + b[i] + '</span>';
-      if ((i+1) % 8 === 0 && i < b.length-1) h += ' ';
+    const d = await api('/api/diag');
+    $('diag-card').classList.remove('hidden');
+    $('d-idcode').textContent = d.idcode;
+    $('d-tdo').textContent = d.tdo_idle < 0 ? 'n/a' : (d.tdo_idle ? 'high (1)' : 'low (0)');
+    $('d-act').textContent = d.tdo_activity_ones + ' / 64 ones';
+    if (!d.pin_probe) $('d-loop').textContent = 'n/a (backend)';
+    else if (d.loopback_hi < 0) $('d-loop').textContent = 'no jumper';
+    else $('d-loop').textContent = 'hi='+d.loopback_hi+' lo='+d.loopback_lo+(d.loopback_hi===1&&d.loopback_lo===0?' OK':' FAIL');
+
+    // Interpret.
+    const id = (d.idcode||'').toLowerCase();
+    let cls='warn', verdict='';
+    if (id !== '0x00000000' && id !== '0xffffffff') {
+      cls='ok'; verdict='Target responding (IDCODE '+d.idcode+'). JTAG link looks good.';
+      setTag('diag-tag','ok','responding');
+    } else if (id === '0xffffffff') {
+      cls='err'; verdict='TDO stuck high / no response. Check TCK, TMS and TDI wiring and that the target is powered.';
+      setTag('diag-tag','err','no link');
+    } else {
+      cls='err'; verdict='TDO reads low / no response. Check the TDO wire (orientation, offset, not on GND) and target power.';
+      setTag('diag-tag','err','no link');
+    }
+    if (d.pin_probe && d.loopback_hi >= 0) {
+      verdict += (d.loopback_hi===1 && d.loopback_lo===0)
+        ? ' TDI->TDO loopback passes, so the ESP pins are good.'
+        : ' TDI->TDO loopback FAILED - check the ESP pins / jumper.';
+    }
+    const v = $('diag-verdict'); v.className = 'diag-verdict '+cls; v.textContent = verdict;
+    log(cls==='ok'?'ok':'warn','Diag: '+verdict);
+  } catch(e) {
+    log('err','Diagnostics failed: '+e.message);
+  } finally { setBusy(false); }
+}
+
+/* ---------------- Pinout + auto-detection ---------------- */
+const SIGS = [['tck','TCK'],['tms','TMS'],['tdi','TDI'],['tdo','TDO'],['trst','TRST'],['srst','SRST']];
+let curPins = {};
+function renderPinmap(pins, changed) {
+  curPins = pins; const el = $('pinmap'); el.innerHTML = '';
+  SIGS.forEach(([k,lbl]) => {
+    const g = pins[k]; if (g == null || g < 0) return;
+    const d = document.createElement('div');
+    d.className = 'pin sig-'+k + (changed && changed.has(k) ? ' changed' : '');
+    const sig = document.createElement('span'); sig.className='pin-sig'; sig.textContent = lbl;
+    const gp = document.createElement('span'); gp.className='pin-gpio'; gp.textContent = 'GPIO'+g;
+    d.appendChild(sig); d.appendChild(gp); el.appendChild(d);
+  });
+}
+async function loadPins() {
+  try { renderPinmap(await api('/api/pins')); setTag('pin-state','mute','configured'); }
+  catch(e) { log('warn','Could not read pin config: '+e.message); }
+}
+
+async function runAutoPins() {
+  if (busy) return;
+  if (!confirm('Auto-detect briefly drives the candidate JTAG pins to probe the target.\nFor a fully unknown target, series resistors on the probe wires are safest.\n\nProceed?')) return;
+  setBusy(true);
+  $('pinmap').classList.add('scanning');
+  setTag('pin-state','info','probing');
+  $('pin-note').textContent = 'Trying pin permutations...';
+  log('cmd','auto-detect JTAG pins');
+  const t0 = Date.now();
+  try {
+    const d = await api('/api/autopins', { method:'POST', body:'' });
+    const wait = 1400 - (Date.now()-t0);          // keep the animation legible
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    $('pinmap').classList.remove('scanning');
+    if (d.ok) {
+      const np = { tck:d.tck, tms:d.tms, tdi:d.tdi, tdo:d.tdo, trst:curPins.trst, srst:curPins.srst };
+      const changed = new Set(); ['tck','tms','tdi','tdo'].forEach(k=>{ if (curPins[k] !== np[k]) changed.add(k); });
+      renderPinmap(np, changed);
+      setTag('pin-state','ok','locked');
+      const tnote = d.tdi_assumed ? ' (TDI by elimination)' : (d.tdi_found ? '' : ' (TDI unconfirmed)');
+      $('pin-note').textContent = 'IDCODE '+d.idcode+' found in '+d.trials+' permutations'+tnote+'.';
+      log('ok','Pins: TCK='+d.tck+' TMS='+d.tms+' TDO='+d.tdo+' TDI='+d.tdi+'  IDCODE '+d.idcode);
+      log('info','Applied to the live session. Set PIN_* in main.c to make it permanent.');
+      await identify(true);
+    } else {
+      setTag('pin-state','err','not found');
+      $('pin-note').textContent = 'No mapping found in '+d.trials+' permutations.';
+      log('err','No working pin mapping ('+d.trials+' permutations). Check wiring and power, then run Diagnostics.');
+    }
+  } catch(e) {
+    $('pinmap').classList.remove('scanning'); setTag('pin-state','err','error');
+    log('err','Auto-detect failed: '+e.message);
+  } finally { setBusy(false); }
+}
+
+/* ---------------- Boundary scan ---------------- */
+let autoTimer = null;
+async function bscan(quiet) {
+  try {
+    const d = await api('/api/bscan');
+    $('bsr-empty').classList.add('hidden');
+    $('bsr-display').classList.remove('hidden');
+    $('bsr-hex').textContent = d.hex;
+    const b = d.bits || ''; let h='';
+    for (let i=0;i<b.length;i++){
+      const c = b[i]==='1' ? 'var(--ok)' : 'var(--text3)';
+      h += '<span style="color:'+c+'">'+b[i]+'</span>';
+      if ((i+1)%8===0 && i<b.length-1) h+=' ';
     }
     $('bsr-bits').innerHTML = h;
-  } catch(e) { $('bsr-hex').textContent = 'Error'; }
+    if (!quiet) log('info','Boundary scan: '+d.bsr_len+' bits, 0x'+d.hex);
+  } catch(e) { if (!quiet) log('err','Boundary scan failed: '+e.message); stopAuto(); }
 }
-function bscanAuto() {
-  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; $('btn-auto').textContent = 'Auto'; return; }
-  autoTimer = setInterval(bscan, 500); $('btn-auto').textContent = 'Stop'; bscan();
-}
+function stopAuto(){ if(autoTimer){ clearInterval(autoTimer); autoTimer=null; $('btn-auto').textContent='Auto'; } }
+$('btn-bscan').onclick = () => bscan(false);
+$('btn-auto').onclick = () => {
+  if (autoTimer) { stopAuto(); log('info','Auto-capture stopped.'); return; }
+  autoTimer = setInterval(()=>bscan(true), 500); $('btn-auto').textContent='Stop'; log('cmd','auto boundary-scan @ 2 Hz'); bscan(true);
+};
 
-/* File upload */
+/* ---------------- Firmware upload ---------------- */
 const dz = $('dropzone'), fi = $('fileInput');
-['dragenter','dragover'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('over'); }));
-['dragleave','drop'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.remove('over'); }));
-dz.addEventListener('drop', ev => { if (ev.dataTransfer.files.length) upload(ev.dataTransfer.files[0]); });
-fi.addEventListener('change', () => { if (fi.files.length) upload(fi.files[0]); });
+let uploadedType = '';
+['dragenter','dragover'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.add('over');}));
+['dragleave','drop'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.remove('over');}));
+dz.addEventListener('drop', ev=>{ if(ev.dataTransfer.files.length) upload(ev.dataTransfer.files[0]); });
+fi.addEventListener('change', ()=>{ if(fi.files.length) upload(fi.files[0]); });
 
 async function upload(file) {
-  $('status').textContent = 'Uploading ' + file.name + '...';
+  if (busy) { log('warn','Busy - wait for the current operation.'); return; }
+  setBusy(true);
+  log('cmd','upload '+file.name+' ('+fmt(file.size)+')');
   $('fw-name').textContent = file.name;
-  uploadedType = file.name.endsWith('.svf') ? 'svf' : '';
-
   try {
-    const r = await fetch('/api/upload', { method: 'POST', body: file });
-    const d = await r.json();
-    if (!d.ok) throw new Error('Rejected');
-
+    const d = await api('/api/upload', { method:'POST', body:file });
+    if (!d.ok) throw new Error('rejected by device');
     uploadedType = d.type;
-    const tt = {xe:'xe', elf:'elf', bin:'bin', svf:'svf'}[d.type] || 'bin';
-    $('fw-type').innerHTML = '<span class="ftag ' + tt + '">' + d.type.toUpperCase() + '</span>';
+    const tt = {xe:'xe',elf:'elf',bin:'bin',svf:'svf'}[d.type] || 'bin';
+    $('fw-type').innerHTML = '<span class="ftag '+tt+'">'+d.type.toUpperCase()+'</span>';
     $('fw-size').textContent = fmt(d.size);
-    $('fw-code').textContent = fmt(d.code_size);
-    $('fw-tiles').textContent = d.tiles;
-    $('fw-segs').textContent = d.segments;
-    $('fw-entry0').textContent = d.entry0 === '0x00000000' ? 'boot ROM' : d.entry0;
-    $('fw-entry1').textContent = d.entry1 === '0x00000000' ? 'boot ROM' : d.entry1;
-
-    if (uploadedType === 'svf') {
-      $('fw-tiles').textContent = '--';
-      $('fw-segs').textContent = '--';
-      $('fw-entry0').textContent = '--';
-      $('fw-entry1').textContent = '--';
-      $('fw-code').textContent = fmt(d.size);
-    }
-
-    show('fw-info');
-    $('status').textContent = 'Ready.';
+    const isSvf = d.type === 'svf';
+    $('fw-code').textContent = fmt(isSvf ? d.size : d.code_size);
+    $('fw-tiles').textContent = isSvf ? '--' : d.tiles;
+    $('fw-segs').textContent = isSvf ? '--' : d.segments;
+    $('fw-entry0').textContent = isSvf ? '--' : (d.entry0==='0x00000000'?'boot ROM':d.entry0);
+    $('fw-entry1').textContent = isSvf ? '--' : (d.entry1==='0x00000000'?'boot ROM':d.entry1);
+    $('fw-info').classList.remove('hidden');
+    setTag('fw-tag','info', d.type.toUpperCase()+' '+fmt(d.size));
+    log('ok','Uploaded: '+d.type.toUpperCase()+', '+fmt(d.size)+(isSvf?'':', '+d.tiles+' tile(s), '+d.segments+' segment(s)'));
     autoSelectTarget(uploadedType);
   } catch(e) {
-    $('status').textContent = 'Upload failed: ' + e.message;
-  }
+    log('err','Upload failed: '+e.message);
+    setTag('fw-tag','err','failed');
+  } finally { setBusy(false); }
 }
 
-/* Program */
-let pollTimer = null;
+/* ---------------- Target / method (segmented) ---------------- */
+const methods = {
+  xmos:  [{v:'ram',  l:'Load to RAM', h:'Loads and runs the image from xCORE RAM via JTAG. Volatile - lost on power cycle. Use a .xe.'},
+          {v:'flash',l:'Write flash', h:'Writes the boot image to the XMOS QSPI flash via a JTAG stub. Permanent - survives power cycle.'}],
+  ice40: [{v:'cram', l:'Load CRAM',  h:'Volatile configuration load into the iCE40 over SPI. Lost on power cycle.'},
+          {v:'flash',l:'Write flash', h:'Writes the bitstream to the iCE40 SPI flash. Permanent.'}],
+  svf:   [{v:'svf',  l:'Play SVF',   h:'Streams an SVF program over JTAG - works with any IEEE 1149.1 TAP (ECP5, Xilinx, Altera, CPLDs).'}],
+};
+let progTarget = 'xmos', progMethod = 'ram';
 
+function renderTargets() {
+  document.querySelectorAll('#seg-target button').forEach(b => {
+    b.classList.toggle('active', b.dataset.t === progTarget);
+    b.disabled = busy;
+  });
+}
+function renderMethods() {
+  const seg = $('seg-method'); seg.innerHTML = '';
+  const list = methods[progTarget];
+  if (!list.find(m => m.v === progMethod)) progMethod = list[0].v;
+  list.forEach(m => {
+    const b = document.createElement('button');
+    b.dataset.m = m.v;
+    b.innerHTML = '<b></b>';
+    b.querySelector('b').textContent = m.l;
+    b.classList.toggle('active', m.v === progMethod);
+    b.classList.toggle('danger', m.v === 'flash' && m.v === progMethod);
+    b.disabled = busy;
+    b.onclick = () => { if (busy) return; progMethod = m.v; renderMethods(); updateGoButton(); };
+    seg.appendChild(b);
+  });
+  const single = list.length < 2;
+  $('seg-method').classList.toggle('hidden', single);
+  $('method-label').classList.toggle('hidden', single);
+}
+function setTarget(t) {
+  progTarget = t; progMethod = methods[t][0].v;
+  renderTargets(); renderMethods(); updateGoButton();
+}
+document.querySelectorAll('#seg-target button').forEach(b =>
+  b.onclick = () => { if (busy) return; setTarget(b.dataset.t); });
+
+function autoSelectTarget(type) {
+  if (type === 'svf') setTarget('svf');
+  else if (type === 'xe' || type === 'elf') setTarget('xmos');
+  else renderMethods();
+}
+function curMethod() { return methods[progTarget].find(m => m.v === progMethod) || methods[progTarget][0]; }
+function updateGoButton() {
+  const hasFile = !$('fw-info').classList.contains('hidden');
+  const ok = hasFile && (progTarget === 'svf' ? uploadedType === 'svf' : uploadedType !== 'svf');
+  const m = curMethod(); const go = $('btn-go');
+  go.disabled = !ok || busy;
+  go.className = (m.v === 'flash') ? 'danger' : 'primary';
+  go.textContent = (m.v === 'flash') ? 'Write flash'
+                 : (m.v === 'ram' ? 'Load to RAM' : (m.v === 'cram' ? 'Load CRAM' : 'Play SVF'));
+  $('method-hint').textContent = m.h || '';
+  renderTargets();
+}
+
+/* ---------------- Program ---------------- */
+$('btn-go').onclick = program;
 async function program() {
-  const target = $('sel-target').value;
-  const method = $('sel-method').value;
+  if (busy) return;
+  const target = progTarget, m = curMethod();
+  if (m.v==='flash' && !confirm('Write to the device flash?\nThis permanently overwrites its boot image.')) return;
+  if (target==='xmos' && !identifiedOk && !confirm('No XMOS device has been identified.\nProgram anyway?')) return;
 
-  $('btn-go').disabled = true;
-  show('pbar');
-  $('pfill').style.width = '0%';
-  $('pfill').className = 'fill';
+  setBusy(true);
+  let endpoint;
+  if (target==='svf') endpoint = '/api/svf';
+  else endpoint = '/api/flash?mode='+m.v;
 
-  let endpoint, label;
-  if (target === 'svf') {
-    endpoint = '/api/svf';
-    label = 'Playing SVF...';
-  } else if (target === 'ice40') {
-    endpoint = '/api/flash?mode=' + method;
-    label = method === 'cram' ? 'Loading iCE40 CRAM...' : 'Writing iCE40 flash...';
-  } else {
-    endpoint = '/api/flash?mode=' + method;
-    label = method === 'ram' ? 'Loading to RAM...' : 'Writing SPI flash...';
-  }
-
-  $('status').textContent = label;
-
+  $('prog').classList.remove('hidden');
+  setProgress(0, 'Starting...', 'indet');
+  lastOpStatus = '';
+  log('cmd','program: '+target+' / '+m.v);
   try {
-    await fetch(endpoint, { method: 'POST' });
-    pollTimer = setInterval(poll, 500);
+    await api(endpoint, { method:'POST', body:'' });
+    opActive = true;                       // heartbeat tick() now streams progress
   } catch(e) {
-    $('status').textContent = 'Failed: ' + e.message;
-    updateGoButton();
+    log('err','Could not start: '+e.message);
+    setProgress(-1, 'Failed to start', 'error');
+    setBusy(false);
   }
 }
 
-async function poll() {
-  try {
-    const r = await fetch('/api/status'); const d = await r.json();
-    $('status').textContent = d.status;
-    if (d.progress >= 0) $('pfill').style.width = d.progress + '%';
-    if (d.progress >= 100 || d.result < 0) {
-      clearInterval(pollTimer);
-      $('pfill').className = 'fill ' + (d.result === 0 ? 'done' : 'error');
-      updateGoButton();
-    }
-  } catch(e) {}
+function updateProgress(st) {
+  const p = st.progress, txt = st.status || '';
+  if (txt && txt !== lastOpStatus) { log('info', txt); lastOpStatus = txt; }
+  if (p >= 0) setProgress(p, txt || 'Working...', '');
+  else setProgress(0, txt || 'Working...', 'indet');
+  if (p >= 100 && st.result === 0) {
+    opActive = false; setProgress(100,'Done','done');
+    log('ok','Operation complete.');
+    if (progMethod === 'flash') log('info','Power-cycle the target to boot the new image.');
+    setBusy(false);
+  } else if (p < 0 && lastOpStatus && /fail/i.test(lastOpStatus)) {
+    opActive = false; setProgress(100, txt, 'error');
+    log('err','Operation failed: '+txt);
+    setBusy(false);
+  }
+}
+function setProgress(pct, label, mod) {
+  const fill = $('pfill');
+  fill.className = 'fill' + (mod ? ' '+mod : '');
+  fill.style.width = (mod==='indet') ? '' : Math.max(0,Math.min(100,pct))+'%';
+  $('prog-label').textContent = label;
+  $('prog-pct').textContent = (mod==='indet' || pct<0) ? '' : pct+'%';
 }
 
-/* Init */
-updateMethods();
+/* ---------------- Busy / button state ---------------- */
+function setBusy(b) {
+  busy = b;
+  ['btn-identify','btn-diag','btn-autopins','btn-bscan','btn-go','fileInput'].forEach(id=>{ const el=$(id); if(el) el.disabled=b; });
+  if (!b) updateGoButton();
+}
+function setTag(id, kind, text) { const el=$(id); el.className='tag tag-'+kind; el.textContent=text; }
+
+/* ---------------- Boot ---------------- */
+$('btn-identify').onclick = () => identify(false);
+$('btn-diag').onclick = runDiag;
+$('btn-autopins').onclick = runAutoPins;
+renderTargets(); renderMethods(); updateGoButton();
+log('info','XMOS JTAG Flasher UI ready. Probing device...');
+tick();
+setInterval(tick, 1500);
 </script>
 </body>
 </html>

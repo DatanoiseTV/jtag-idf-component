@@ -229,6 +229,8 @@ printf("SVF complete: %zu commands executed, %zu TDO mismatches\n",
 
 A ready-to-flash example with a browser UI lives in `example/`.
 
+![Web flasher UI](docs/webui.png)
+
 ```sh
 cd example
 
@@ -254,11 +256,30 @@ reachable by name at **http://xmflash.local** regardless of the DHCP address.
 
 | Section | |
 |---|---|
-| **Device** | One-click identify -- IDCODE, family, tiles, revision |
+| **Device** | Auto-identify on connect -- IDCODE, family, tiles, revision, decoded chip description |
+| **Pinout** | Live TCK/TMS/TDI/TDO/TRST/SRST -> GPIO map, colour-coded |
+| **Diagnostics** | One-click TDO / loopback / IDCODE probe with a plain-language verdict for wiring faults |
+| **Auto-detect pins** | Brute-forces the JTAG pin mapping among the configured GPIOs (handles a swapped header) with a live scan animation |
 | **JTAG Chain** | Visual diagram: `TDI -> [XU316] -> [ECP5] -> TDO` |
 | **Boundary Scan** | Live pin-state capture with hex + bit view, auto-refresh |
-| **Firmware** | Drag-and-drop `.xe` / `.bin` / `.svf`, shows file details |
-| **Program** | Select target (XMOS / iCE40 / SVF) and method (RAM / Flash / CRAM), one-click go |
+| **Firmware** | Drag-and-drop `.xe` / `.bin` / `.elf` / `.svf`, shows parsed file details |
+| **Program** | Pick the device (XMOS / iCE40 / generic JTAG) and method, with a real progress bar driven by the actual erase/write/load progress |
+| **Activity Log** | Timestamped console of every action, status and error |
+
+A persistent connection indicator, robust error reporting, and a confirmation
+prompt on destructive flash writes round it out.
+
+### Pin auto-detection
+
+If the JTAG header is wired but you are not sure which GPIO went where, **Auto-detect
+pins** (also `POST /api/autopins`) tries each ordered (TCK, TMS, TDO) permutation of
+the configured candidate pins, looks for a valid IEEE 1149.1 IDCODE, then confirms TDI
+with a BYPASS echo test and applies the mapping to the live session. Non-driven
+candidates are held as pulled-up inputs so an active-low TRST/SRST stays deasserted.
+
+> It briefly drives candidate pins that might be a target *output*; it is
+> low-frequency and short, but for a fully unknown target, series resistors on
+> the probe wires are the only truly safe approach.
 
 ### Remote CLI
 

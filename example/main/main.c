@@ -136,6 +136,7 @@ static const char *TAG = "xmos_web";
  * Globals
  * ---------------------------------------------------------------------- */
 static xmos_jtag_handle_t s_jtag = NULL;
+static xmos_jtag_pins_t s_pins = {0};   /* live pin assignment (updated by autopins) */
 static xmos_chip_info_t s_chip_info = {0};
 static bool s_identified = false;
 static size_t s_bsr_len = 0;
@@ -318,6 +319,85 @@ static esp_err_t handler_diag(httpd_req_t *req)
         "\"loopback_hi\":%d,\"loopback_lo\":%d,\"pin_probe\":%s}",
         (unsigned long)d.idcode_raw, d.tdo_idle, d.tdo_activity_ones,
         d.loopback_hi, d.loopback_lo, d.pin_probe_ok ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    return ESP_OK;
+}
+
+static void jtag_progress_cb(const char *stage, size_t done, size_t total, void *ctx);
+
+static xmos_jtag_pins_t make_jtag_pins(void)
+{
+    xmos_jtag_pins_t p = {
+        .tck = PIN_TCK, .tms = PIN_TMS, .tdi = PIN_TDI, .tdo = PIN_TDO,
+        .trst_n = PIN_TRST, .srst_n = PIN_SRST,
+    };
+    return p;
+}
+
+/* GET /api/pins -- current live pin assignment (GPIO_NUM_NC -> -1). */
+static esp_err_t handler_pins(httpd_req_t *req)
+{
+    char json[160];
+    snprintf(json, sizeof(json),
+        "{\"tck\":%d,\"tms\":%d,\"tdi\":%d,\"tdo\":%d,\"trst\":%d,\"srst\":%d}",
+        s_pins.tck, s_pins.tms, s_pins.tdi, s_pins.tdo, s_pins.trst_n, s_pins.srst_n);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    return ESP_OK;
+}
+
+/* POST /api/autopins -- brute-force the JTAG pin mapping among the configured
+ * candidate GPIOs (handles a swapped/random header), then re-init the live
+ * handle with whatever it finds so the next Identify just works. */
+static esp_err_t handler_autopins(httpd_req_t *req)
+{
+    if (s_flash_progress >= 0 && s_flash_progress < 100) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "In progress"); return ESP_FAIL;
+    }
+    gpio_num_t all[] = { PIN_TCK, PIN_TMS, PIN_TDI, PIN_TDO, PIN_TRST, PIN_SRST };
+    gpio_num_t cand[6]; size_t nc = 0;
+    for (size_t i = 0; i < sizeof(all)/sizeof(all[0]); i++) {
+        if (all[i] == GPIO_NUM_NC) continue;
+        bool dup = false;
+        for (size_t j = 0; j < nc; j++) if (cand[j] == all[i]) dup = true;
+        if (!dup) cand[nc++] = all[i];
+    }
+
+    /* Free the live handle so its pin config doesn't fight the raw probe. */
+    if (s_jtag) { xmos_jtag_deinit(s_jtag); s_jtag = NULL; }
+
+    xmos_pinmap_t m;
+    xmos_jtag_autodetect_pins(cand, nc, &m);
+
+    /* If TDI wasn't BYPASS-confirmed but one candidate is left over, assume it. */
+    gpio_num_t tdi = m.tdi; bool tdi_assumed = false;
+    if (m.found && !m.tdi_found) {
+        gpio_num_t left = GPIO_NUM_NC; int cnt = 0;
+        for (size_t i = 0; i < nc; i++)
+            if (cand[i] != m.tck && cand[i] != m.tms && cand[i] != m.tdo) { left = cand[i]; cnt++; }
+        if (cnt == 1) { tdi = left; tdi_assumed = true; }
+    }
+
+    /* Re-init with the discovered mapping (or restore defaults if nothing found). */
+    xmos_jtag_pins_t np = make_jtag_pins();
+    if (m.found) {
+        np.tck = m.tck; np.tms = m.tms; np.tdo = m.tdo;
+        np.tdi = (tdi != GPIO_NUM_NC) ? tdi : PIN_TDI;
+        np.trst_n = GPIO_NUM_NC; np.srst_n = GPIO_NUM_NC;
+    }
+    xmos_jtag_init(&np, &s_jtag);
+    xmos_jtag_set_progress_cb(s_jtag, jtag_progress_cb, NULL);
+    s_pins = np;
+
+    char json[320];
+    snprintf(json, sizeof(json),
+        "{\"ok\":%s,\"idcode\":\"0x%08lx\",\"tck\":%d,\"tms\":%d,\"tdi\":%d,\"tdo\":%d,"
+        "\"tdi_found\":%s,\"tdi_assumed\":%s,\"trials\":%d}",
+        m.found ? "true" : "false", (unsigned long)m.idcode,
+        m.found ? m.tck : -1, m.found ? m.tms : -1,
+        m.found ? (int)tdi : -1, m.found ? m.tdo : -1,
+        m.tdi_found ? "true" : "false", tdi_assumed ? "true" : "false", m.trials);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json);
     return ESP_OK;
@@ -510,6 +590,18 @@ static esp_err_t handler_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Map component progress (stage + done/total) onto the shared status the web
+ * UI and CLI poll via /api/status.  Hold at 99% during work so flash_task sets
+ * the final 100% only on success. */
+static void jtag_progress_cb(const char *stage, size_t done, size_t total, void *ctx)
+{
+    (void)ctx;
+    int pct = total ? (int)((uint64_t)done * 100 / total) : 0;
+    if (pct > 99) pct = 99;
+    s_flash_progress = pct;
+    snprintf(s_flash_status, sizeof(s_flash_status), "%s %zu/%zu", stage, done, total);
+}
+
 /* mode: 0=ram, 1=flash, 2=cram (iCE40) */
 static void flash_task(void *arg)
 {
@@ -669,6 +761,8 @@ static void start_webserver(void)
         { .uri = "/",              .method = HTTP_GET,  .handler = handler_index },
         { .uri = "/api/identify",  .method = HTTP_GET,  .handler = handler_identify },
         { .uri = "/api/diag",      .method = HTTP_GET,  .handler = handler_diag },
+        { .uri = "/api/autopins",  .method = HTTP_POST, .handler = handler_autopins },
+        { .uri = "/api/pins",      .method = HTTP_GET,  .handler = handler_pins },
         { .uri = "/api/chain",     .method = HTTP_GET,  .handler = handler_chain },
         { .uri = "/api/bscan",     .method = HTTP_GET,  .handler = handler_bscan },
         { .uri = "/api/upload",    .method = HTTP_POST, .handler = handler_upload },
@@ -691,11 +785,10 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    xmos_jtag_pins_t pins = {
-        .tck = PIN_TCK, .tms = PIN_TMS, .tdi = PIN_TDI, .tdo = PIN_TDO,
-        .trst_n = PIN_TRST, .srst_n = PIN_SRST,
-    };
+    xmos_jtag_pins_t pins = make_jtag_pins();
+    s_pins = pins;
     ESP_ERROR_CHECK(xmos_jtag_init(&pins, &s_jtag));
+    xmos_jtag_set_progress_cb(s_jtag, jtag_progress_cb, NULL);
 
 #if CONFIG_IDF_TARGET_ESP32P4
     net_init_ethernet();
