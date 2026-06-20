@@ -469,8 +469,8 @@ The component is layered so device-specific logic sits on top of a generic JTAG 
  │  XMOS xCORE │  │  SVF Player  │  │ iCE40 (SPI) │   Device-specific
  │  (MUX, DBG) │  │  (generic)   │  │             │
  └──────┬──────┘  └──────┬───────┘  └──────┬──────┘
-        │                │                  │
- ┌──────┴────────────────┴──────────────────┘
+        │                │                 │
+ ┌──────┴────────────────┴─────────────────┘
  │          Generic JTAG Transport
  │    (shift_ir, shift_dr, reset, idle)
  ├─────────────────┬─────────────────┐
