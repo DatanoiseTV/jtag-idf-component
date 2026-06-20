@@ -1355,12 +1355,17 @@ static esp_err_t wait_stub_status(xmos_jtag_handle_t h, int tile,
                                   uint32_t expected, int timeout_ms)
 {
     int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    uint32_t status = 0;
+    bool first = true;
 
     while (esp_timer_get_time() < deadline) {
-        uint32_t status = 0;
         esp_err_t err = reg_access(h, tile, XMOS_PSWITCH_DBG_STATUS,
                                    0, &status, false);
         if (err != ESP_OK) return err;
+
+        /* The switch-register read pipeline is delayed by one, so the first
+         * read returns the previous transaction's (stale) value -- skip it. */
+        if (first) { first = false; continue; }
 
         if (status == expected) return ESP_OK;
         if (status >= STUB_STATUS_ERROR) {
@@ -1371,6 +1376,10 @@ static esp_err_t wait_stub_status(xmos_jtag_handle_t h, int tile,
         h->transport->idle(h->transport, 100);
     }
 
+    /* Log the raw value so we can tell apart "mailbox never written" (0x0) from
+     * "stub alive but a later phase stalled" (the 0x55 alive marker, etc.). */
+    ESP_LOGW(TAG, "stub status never reached 0x%lx (last read 0x%08lx)",
+             (unsigned long)expected, (unsigned long)status);
     return ESP_ERR_TIMEOUT;
 }
 

@@ -99,8 +99,17 @@ on tile[0]: quad_spi_ports qspi = {
 static inline unsigned mbox_get(unsigned reg)        { return getps(reg); }
 static inline void     mbox_set(unsigned reg, unsigned v) { setps(reg, v); }
 
+#define ST_ALIVE   0x55   /* diagnostic: set before flash init, proves the
+                             mailbox (setps) reaches the host */
+
 int main(void)
 {
+    /* Write an "alive" marker FIRST -- before touching the flash. If the host
+     * times out seeing 0x55, the stub is running and the mailbox works but
+     * flash init stalled; if it sees 0x00, setps/the scratch mailbox isn't
+     * reaching the host at all. */
+    mbox_set(DBG_STATUS, ST_ALIVE);
+
     /* Bring up the flash (init also issues write-enable + sets Quad-Enable
      * and waits for idle -- see sc_flash quad_spi_flash_init). */
     quad_spi_flash_init(qspi);
