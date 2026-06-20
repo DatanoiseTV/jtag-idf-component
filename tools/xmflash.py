@@ -226,6 +226,13 @@ class Flasher:
     def status(self):
         return self._json("/api/status")
 
+    def pins(self):
+        return self._json("/api/pins")
+
+    def autopins(self):
+        return self._json("/api/autopins", data=b"", method="POST",
+                          timeout=max(self.timeout, 60))
+
     def upload(self, data):
         return self._json("/api/upload", data=data, method="POST",
                           ctype="application/octet-stream", timeout=UPLOAD_TIMEOUT)
@@ -346,6 +353,29 @@ def cmd_status(fl, args):
     return 0
 
 
+def cmd_pins(fl, args):
+    p = fl.pins()
+    print("Current pin assignment:")
+    for k in ('tck', 'tms', 'tdi', 'tdo', 'trst', 'srst'):
+        v = p.get(k)
+        print("  %-4s : %s" % (k.upper(), 'NC' if v in (None, -1) else 'GPIO%d' % v))
+    return 0
+
+
+def cmd_autopins(fl, args):
+    print("Auto-detecting JTAG pins (briefly drives candidate pins)...")
+    d = fl.autopins()
+    if not d.get('ok'):
+        print("No working pin mapping found in %s permutations." % d.get('trials'))
+        return 1
+    extra = ' (TDI by elimination)' if d.get('tdi_assumed') else ('' if d.get('tdi_found') else ' (TDI unconfirmed)')
+    print("Found in %s permutations (IDCODE %s):" % (d.get('trials'), d.get('idcode')))
+    print("  TCK=GPIO%s  TMS=GPIO%s  TDI=GPIO%s  TDO=GPIO%s%s"
+          % (d.get('tck'), d.get('tms'), d.get('tdi'), d.get('tdo'), extra))
+    print("Applied to the live session. Set PIN_* in main.c to persist.")
+    return 0
+
+
 def cmd_resolve(fl, args):
     host, port = fl._hostname_port()
     ips = fl.resolve()
@@ -438,6 +468,8 @@ def build_parser():
     sub.add_parser("diag", help="low-level JTAG pin/IDCODE diagnostic").set_defaults(fn=cmd_diag)
     sub.add_parser("scan", help="scan and list the JTAG chain").set_defaults(fn=cmd_scan)
     sub.add_parser("status", help="show current operation status").set_defaults(fn=cmd_status)
+    sub.add_parser("pins", help="show the current JTAG pin assignment").set_defaults(fn=cmd_pins)
+    sub.add_parser("autopins", help="auto-detect the JTAG pin mapping").set_defaults(fn=cmd_autopins)
     sub.add_parser("resolve", help="resolve the host via the system resolver and exit").set_defaults(fn=cmd_resolve)
     sub.add_parser("config", help="show resolved configuration and exit").set_defaults(fn=cmd_config, _no_host=True)
 

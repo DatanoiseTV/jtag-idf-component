@@ -21,6 +21,8 @@ tools/xmflash.py svf program.svf          # play an SVF file
 | `identify` | Identify the attached XMOS device (family, IDCODE, tiles) |
 | `scan` | Scan and list the JTAG chain |
 | `diag` | Low-level JTAG pin / IDCODE diagnostic |
+| `pins` | Show the current JTAG pin assignment |
+| `autopins` | Auto-detect the JTAG pin mapping (handles a swapped header) |
 | `bscan [--bits]` | Capture the boundary-scan register |
 | `status` | Show the current operation status |
 | `resolve` | Resolve the host through the system resolver and print the IP |
