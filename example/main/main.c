@@ -769,7 +769,9 @@ static esp_err_t handler_status(httpd_req_t *req)
 static void start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 10;
+    /* Must be >= the number of routes below (currently 11) -- the registration
+     * silently fails past this cap, which 404s the last-registered routes. */
+    config.max_uri_handlers = 16;
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &config));
 
