@@ -6,7 +6,7 @@ A general-purpose JTAG programmer component for ESP-IDF. Scan chains, program FP
 
 ---
 
-<img width="766" height="579" alt="Screenshot 2026-04-10 at 22 47 39" src="https://github.com/user-attachments/assets/7fd63ede-c594-4aef-853a-fe4208c1809c" />
+<img alt="XMOS JTAG web flasher UI" src="docs/webui.png" />
 
 ---
 
@@ -15,9 +15,11 @@ A general-purpose JTAG programmer component for ESP-IDF. Scan chains, program FP
 | | |
 |---|---|
 | **Chain scan** | Auto-detect every device on the JTAG chain -- XMOS, Lattice, Xilinx, Espressif, ARM DAP and more |
-| **SVF player** | Play Serial Vector Format files to program any JTAG-capable device *(coming soon)* |
-| **XMOS support** | Full xCORE programming: load `.xe` to RAM, program SPI flash, debug register access |
-| **iCE40 support** | Program Lattice iCE40 FPGAs via SPI (CRAM and flash) *(coming soon)* |
+| **SVF player** | Play Serial Vector Format files to program any JTAG-capable device |
+| **XMOS support** | Full xCORE programming: load `.xe` to RAM, program boot flash over JTAG, debug register access |
+| **iCE40 support** | Program Lattice iCE40 FPGAs via SPI (CRAM and flash) |
+| **Pin auto-detect** | Brute-force the JTAG pin mapping if the header is wired wrong |
+| **Remote CLI** | Script everything over HTTP with `tools/xmflash.py` (mDNS `xmflash.local`) |
 | **Boundary scan** | Capture all I/O pin states, auto-detect BSR length, live refresh from the browser |
 | **Two backends** | GPIO bit-bang on any ESP32 (1-5 MHz) **or** PARLIO DMA on ESP32-P4 (up to 40 MHz) |
 | **Web UI** | Visual chain diagram, firmware inspector, one-click flash -- no tools to install |
@@ -228,8 +230,6 @@ printf("SVF complete: %zu commands executed, %zu TDO mismatches\n",
 ## Web Flasher Example
 
 A ready-to-flash example with a browser UI lives in `example/`.
-
-![Web flasher UI](docs/webui.png)
 
 ```sh
 cd example
