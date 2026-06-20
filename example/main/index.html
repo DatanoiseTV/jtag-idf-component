@@ -170,7 +170,13 @@
   .drop .label b { color: var(--accent); font-weight: 600; }
   .drop .hint { font-size: 0.66rem; color: var(--text3); margin-top: 0.3rem; font-family: var(--mono); }
 
+  .fw-warn { margin-top: 0.7rem; padding: 0.55rem 0.7rem; border-radius: var(--radius-sm);
+    font-size: 0.72rem; line-height: 1.45; background: var(--err-dim); color: var(--err);
+    border: 1px solid rgba(229,115,115,0.35); }
+  .fw-warn.warn { background: var(--warn-dim); color: var(--warn); border-color: rgba(224,177,90,0.35); }
+
   .ftag { display: inline-block; padding: 0.12rem 0.45rem; border-radius: var(--radius-sm); font-size: 0.62rem; font-weight: 700; }
+  .ftag.xn { background: var(--err-dim); color: var(--err); }
   .ftag.xe { background: var(--accent-dim); color: var(--accent); }
   .ftag.elf { background: var(--ok-dim); color: var(--ok); }
   .ftag.bin { background: var(--warn-dim); color: var(--warn); }
@@ -298,6 +304,7 @@
         <div class="label">Drop a file here or <b>browse</b></div>
         <div class="hint">.xe &middot; .bin &middot; .elf &middot; .svf</div>
       </div>
+      <div class="fw-warn hidden" id="fw-warn"></div>
       <div id="fw-info" class="hidden" style="margin-top:0.8rem">
         <div class="grid">
           <div class="field"><label>File</label><div class="val" id="fw-name">--</div></div>
@@ -645,16 +652,27 @@ let uploadedType = '';
 dz.addEventListener('drop', ev=>{ if(ev.dataTransfer.files.length) upload(ev.dataTransfer.files[0]); });
 fi.addEventListener('change', ()=>{ if(fi.files.length) upload(fi.files[0]); });
 
+function setFwWarn(msg, level) {
+  const w = $('fw-warn');
+  if (!msg) { w.classList.add('hidden'); w.textContent = ''; return; }
+  w.className = 'fw-warn' + (level === 'warn' ? ' warn' : '');
+  w.textContent = msg;
+}
+
 async function upload(file) {
   if (busy) { log('warn','Busy - wait for the current operation.'); return; }
   setBusy(true);
+  setFwWarn(null);
   log('cmd','upload '+file.name+' ('+fmt(file.size)+')');
   $('fw-name').textContent = file.name;
+  // Quick name-based heads-up before the device even classifies it.
+  if (/\.(xn|xml|txt|csv|json|md|zip|7z|tar|gz|c|h|py)$/i.test(file.name))
+    log('warn','"'+file.name+'" does not look like a firmware image (.xe / .bin / .elf / .svf).');
   try {
     const d = await api('/api/upload', { method:'POST', body:file });
     if (!d.ok) throw new Error('rejected by device');
     uploadedType = d.type;
-    const tt = {xe:'xe',elf:'elf',bin:'bin',svf:'svf'}[d.type] || 'bin';
+    const tt = {xe:'xe',elf:'elf',bin:'bin',svf:'svf',xn:'xn'}[d.type] || 'bin';
     $('fw-type').innerHTML = '<span class="ftag '+tt+'">'+d.type.toUpperCase()+'</span>';
     $('fw-size').textContent = fmt(d.size);
     const isSvf = d.type === 'svf';
@@ -664,9 +682,18 @@ async function upload(file) {
     $('fw-entry0').textContent = isSvf ? '--' : (d.entry0==='0x00000000'?'boot ROM':d.entry0);
     $('fw-entry1').textContent = isSvf ? '--' : (d.entry1==='0x00000000'?'boot ROM':d.entry1);
     $('fw-info').classList.remove('hidden');
-    setTag('fw-tag','info', d.type.toUpperCase()+' '+fmt(d.size));
-    log('ok','Uploaded: '+d.type.toUpperCase()+', '+fmt(d.size)+(isSvf?'':', '+d.tiles+' tile(s), '+d.segments+' segment(s)'));
-    autoSelectTarget(uploadedType);
+
+    if (d.type === 'xn') {
+      setTag('fw-tag','err','not firmware');
+      setFwWarn('This looks like an .xn / XML board-description file, not a firmware image. '
+              + 'Loading it would run garbage on the chip (the "Code 43" symptom). '
+              + 'Use the .xe for RAM, or an xflash boot image (.bin) for flash.');
+      log('err','Rejected: XML/.xn file, not a firmware image.');
+    } else {
+      setTag('fw-tag','info', d.type.toUpperCase()+' '+fmt(d.size));
+      log('ok','Uploaded: '+d.type.toUpperCase()+', '+fmt(d.size)+(isSvf?'':', '+d.tiles+' tile(s), '+d.segments+' segment(s)'));
+      autoSelectTarget(uploadedType);
+    }
   } catch(e) {
     log('err','Upload failed: '+e.message);
     setTag('fw-tag','err','failed');
@@ -723,7 +750,10 @@ function autoSelectTarget(type) {
 function curMethod() { return methods[progTarget].find(m => m.v === progMethod) || methods[progTarget][0]; }
 function updateGoButton() {
   const hasFile = !$('fw-info').classList.contains('hidden');
-  const ok = hasFile && (progTarget === 'svf' ? uploadedType === 'svf' : uploadedType !== 'svf');
+  const valid = progTarget === 'svf'
+    ? uploadedType === 'svf'
+    : (uploadedType === 'xe' || uploadedType === 'elf' || uploadedType === 'bin');
+  const ok = hasFile && valid;   // 'xn' / unknown excluded for every target
   const m = curMethod(); const go = $('btn-go');
   go.disabled = !ok || busy;
   go.className = (m.v === 'flash') ? 'danger' : 'primary';
@@ -738,6 +768,14 @@ $('btn-go').onclick = program;
 async function program() {
   if (busy) return;
   const target = progTarget, m = curMethod();
+  // Guard the common file/method mismatches that boot as a broken device.
+  if (target==='xmos' && m.v==='ram' && uploadedType==='bin' &&
+      !confirm('This is a raw .bin, usually a FLASH image -- not a RAM program.\n'
+             + 'Loading it to RAM typically crashes the chip (USB "Code 43").\n\n'
+             + 'For RAM use the .xe. Continue anyway?')) return;
+  if (target==='xmos' && m.v==='flash' && (uploadedType==='xe' || uploadedType==='elf') &&
+      !confirm('Flash expects an xflash boot image (.bin), not a raw '+uploadedType.toUpperCase()+'.\n'
+             + 'Writing this may not boot. Continue anyway?')) return;
   if (m.v==='flash' && !confirm('Write to the device flash?\nThis permanently overwrites its boot image.')) return;
   if (target==='xmos' && !identifiedOk && !confirm('No XMOS device has been identified.\nProgram anyway?')) return;
 

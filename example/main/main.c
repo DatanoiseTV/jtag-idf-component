@@ -517,6 +517,16 @@ static bool looks_like_svf(const char *buf, size_t len)
     return false;
 }
 
+/* XMOS .xn / .xml board descriptions (and any XML/text) open with markup, not
+ * binary firmware.  Loading one as a raw image runs garbage, so detect the
+ * leading '<' and let the UI warn. */
+static bool looks_like_xn(const uint8_t *buf, size_t len)
+{
+    size_t i = 0;
+    while (i < len && isspace((unsigned char)buf[i])) i++;
+    return i < len && buf[i] == '<';
+}
+
 static esp_err_t handler_upload(httpd_req_t *req)
 {
     if (req->content_len > MAX_FIRMWARE_SIZE || req->content_len == 0) {
@@ -574,6 +584,12 @@ static esp_err_t handler_upload(httpd_req_t *req)
         }
     } else if (looks_like_svf((const char *)s_fw_buf, s_fw_len)) {
         ftype = "svf";
+        code_size = s_fw_len;
+    } else if (looks_like_xn(s_fw_buf, s_fw_len)) {
+        /* .xn / .xml board description (or any XML/text) -- NOT a firmware
+         * image. Flagged so the UI warns instead of loading garbage to RAM
+         * (which boots as a broken USB device, "Code 43"). */
+        ftype = "xn";
         code_size = s_fw_len;
     } else {
         code_size = s_fw_len;
