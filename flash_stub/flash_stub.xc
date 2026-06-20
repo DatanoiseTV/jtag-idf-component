@@ -45,11 +45,18 @@
 #include <platform.h>
 #include "quad_spi_flash.h"
 
-/* --- Mailbox: PSWITCH debug scratch registers (match xmos_regs.h host side) */
-#define DBG_STATUS    0x20   /* scratch[0]  stub -> host */
-#define DBG_COMMAND   0x21   /* scratch[1]  host -> stub */
-#define DBG_ARG0      0x22   /* scratch[2]  address */
-#define DBG_ARG1      0x23   /* scratch[3]  byte count */
+/* --- Mailbox: per-tile debug scratch registers ---------------------------
+ * These are the SAME physical registers the host writes over JTAG (PSWITCH
+ * scratch reg 0x20+n, see xmos_regs.h), but getps/setps on the running core
+ * address them in the processor-status space as resource IDs, NOT by the bare
+ * switch number: scratch[n] = ((0x20+n) << 8) | 0x0b  (= XS1_PS_DBG_SCRATCH_n
+ * in <xs1.h>).  Using 0x20..0x23 here reads/writes the wrong PS register, so
+ * the mailbox never syncs and the host times out at "stub did not become
+ * ready". They MUST be the 0x..0b IDs below. */
+#define DBG_STATUS    0x200b   /* scratch[0]  stub -> host */
+#define DBG_COMMAND   0x210b   /* scratch[1]  host -> stub */
+#define DBG_ARG0      0x220b   /* scratch[2]  address */
+#define DBG_ARG1      0x230b   /* scratch[3]  byte count */
 
 #define CMD_NONE   0x00
 #define CMD_WRITE  0x01
