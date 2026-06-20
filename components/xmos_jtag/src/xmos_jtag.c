@@ -19,6 +19,8 @@
 #include "jtag_transport.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
+#include "driver/gpio.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -33,7 +35,24 @@ struct xmos_jtag_ctx {
     xmos_chip_info_t  chip;
     int               mux_state;    /* Current MUX target, -1 = unknown */
     bool              mux_open;     /* Is the internal chain exposed? */
+    xmos_progress_cb_t progress_cb;
+    void              *progress_ctx;
 };
+
+void xmos_jtag_set_progress_cb(xmos_jtag_handle_t h, xmos_progress_cb_t cb,
+                               void *ctx)
+{
+    if (!h) return;
+    h->progress_cb = cb;
+    h->progress_ctx = ctx;
+}
+
+static inline void report_progress(xmos_jtag_handle_t h, const char *stage,
+                                   size_t done, size_t total)
+{
+    if (h->progress_cb)
+        h->progress_cb(stage, done, total, h->progress_ctx);
+}
 
 /* =========================================================================
  * Helpers
@@ -625,6 +644,166 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
 }
 
 /* =========================================================================
+ * Public API: Pin auto-detection (JTAGulator-style)
+ *
+ * Drives candidate GPIOs as (TCK,TMS) and reads a candidate TDO, brute-forcing
+ * permutations until a valid IDCODE appears; then finds TDI with a BYPASS echo.
+ * Self-contained bit-bang (the transport is bound to fixed pins).
+ * ======================================================================= */
+
+#define AD_HALF_US   4        /* ~125 kHz: gentle on a mis-wired target */
+
+/* One clock with explicit pins.  Samples TDO while TCK is low (the bit the
+ * target produced on the previous falling edge), then pulses TCK. */
+static int ad_clock(gpio_num_t tck, gpio_num_t tms, gpio_num_t tdi,
+                    int tms_v, int tdi_v, gpio_num_t tdo)
+{
+    gpio_set_level(tms, tms_v);
+    if (tdi != GPIO_NUM_NC) gpio_set_level(tdi, tdi_v);
+    esp_rom_delay_us(AD_HALF_US);
+    int t = gpio_get_level(tdo);
+    gpio_set_level(tck, 1);
+    esp_rom_delay_us(AD_HALF_US);
+    gpio_set_level(tck, 0);
+    return t;
+}
+
+/* Drive `drivers` as outputs (low); hold every other candidate as a pulled-up
+ * input so active-low TRST/SRST among them stay deasserted and TDO is defined. */
+static void ad_setup(const gpio_num_t *cand, size_t n,
+                     const gpio_num_t *drivers, size_t ndrv)
+{
+    for (size_t i = 0; i < n; i++) {
+        bool drv = false;
+        for (size_t d = 0; d < ndrv; d++) if (cand[i] == drivers[d]) drv = true;
+        gpio_set_direction(cand[i], drv ? GPIO_MODE_OUTPUT : GPIO_MODE_INPUT);
+        gpio_set_pull_mode(cand[i], GPIO_PULLUP_ONLY);
+        if (drv) gpio_set_level(cand[i], 0);
+    }
+}
+
+/* From any state -> Test-Logic-Reset -> Run-Test/Idle. */
+static void ad_reset(gpio_num_t tck, gpio_num_t tms, gpio_num_t tdo)
+{
+    for (int i = 0; i < 6; i++) ad_clock(tck, tms, GPIO_NUM_NC, 1, 0, tdo);
+    ad_clock(tck, tms, GPIO_NUM_NC, 0, 0, tdo);   /* -> RTI */
+}
+
+/* Read the 32-bit IDCODE that Capture-DR loads after reset. */
+static uint32_t ad_read_idcode(gpio_num_t tck, gpio_num_t tms, gpio_num_t tdo)
+{
+    ad_reset(tck, tms, tdo);
+    ad_clock(tck, tms, GPIO_NUM_NC, 1, 0, tdo);   /* RTI -> Select-DR */
+    ad_clock(tck, tms, GPIO_NUM_NC, 0, 0, tdo);   /* -> Capture-DR */
+    ad_clock(tck, tms, GPIO_NUM_NC, 0, 0, tdo);   /* -> Shift-DR */
+    uint32_t v = 0;
+    for (int i = 0; i < 32; i++)
+        v |= (uint32_t)ad_clock(tck, tms, GPIO_NUM_NC, 0, 0, tdo) << i;
+    return v;
+}
+
+/* Confirm `tdi` is the data input: load BYPASS on the whole chain, then shift a
+ * pattern and check it re-appears on TDO delayed by the chain length (>=1). */
+static bool ad_bypass_echo(gpio_num_t tck, gpio_num_t tms,
+                           gpio_num_t tdi, gpio_num_t tdo)
+{
+    ad_reset(tck, tms, tdo);
+    /* RTI -> Shift-IR */
+    ad_clock(tck, tms, tdi, 1, 1, tdo);  /* Select-DR */
+    ad_clock(tck, tms, tdi, 1, 1, tdo);  /* Select-IR */
+    ad_clock(tck, tms, tdi, 0, 1, tdo);  /* Capture-IR */
+    ad_clock(tck, tms, tdi, 0, 1, tdo);  /* Shift-IR */
+    /* Shift 32 ones into IR (BYPASS on every TAP), last bit exits. */
+    for (int i = 0; i < 32; i++)
+        ad_clock(tck, tms, tdi, i == 31 ? 1 : 0, 1, tdo);
+    ad_clock(tck, tms, tdi, 1, 1, tdo);  /* Exit1 -> Update */
+    ad_clock(tck, tms, tdi, 0, 1, tdo);  /* Update -> RTI */
+    /* RTI -> Shift-DR */
+    ad_clock(tck, tms, tdi, 1, 0, tdo);  /* Select-DR */
+    ad_clock(tck, tms, tdi, 0, 0, tdo);  /* Capture-DR */
+    ad_clock(tck, tms, tdi, 0, 0, tdo);  /* Shift-DR */
+
+    /* Shift a pseudo-random pattern in; record what comes out. */
+    const int N = 24;
+    static const uint8_t pat[24] = {1,0,1,1,0,0,1,0,1,1,1,0,0,1,0,0,1,1,0,1,0,0,0,1};
+    uint8_t out[24];
+    for (int i = 0; i < N; i++)
+        out[i] = ad_clock(tck, tms, tdi, 0, pat[i], tdo);
+
+    /* In BYPASS, out[k] == pat[k-delay] for the chain length `delay` (>=1). */
+    for (int delay = 1; delay <= 4; delay++) {
+        int match = 0, total = 0;
+        for (int k = delay; k < N; k++) { total++; if (out[k] == pat[k - delay]) match++; }
+        if (total > 0 && match >= total - 1) return true;   /* allow 1 glitch */
+    }
+    return false;
+}
+
+esp_err_t xmos_jtag_autodetect_pins(const gpio_num_t *candidates, size_t n,
+                                    xmos_pinmap_t *out)
+{
+    if (!candidates || n < 3 || !out) return ESP_ERR_INVALID_ARG;
+
+    memset(out, 0, sizeof(*out));
+    out->tck = out->tms = out->tdi = out->tdo = GPIO_NUM_NC;
+    int trials = 0;
+
+    ESP_LOGI(TAG, "Pin autodetect: %zu candidates", n);
+
+    /* Phase 1: find (TCK, TMS, TDO) by hunting for a valid IDCODE. */
+    bool found = false;
+    for (size_t a = 0; a < n && !found; a++) {
+        for (size_t b = 0; b < n && !found; b++) {
+            if (b == a) continue;
+            for (size_t c = 0; c < n && !found; c++) {
+                if (c == a || c == b) continue;
+                gpio_num_t tck = candidates[a], tms = candidates[b], tdo = candidates[c];
+                gpio_num_t drv[2] = { tck, tms };
+                ad_setup(candidates, n, drv, 2);
+                trials++;
+                uint32_t id = ad_read_idcode(tck, tms, tdo);
+                if (id != 0 && id != 0xFFFFFFFFu && (id & 1u)) {
+                    out->found = true; out->tck = tck; out->tms = tms;
+                    out->tdo = tdo; out->idcode = id;
+                    found = true;
+                    ESP_LOGI(TAG, "  IDCODE 0x%08lx with TCK=%d TMS=%d TDO=%d",
+                             (unsigned long)id, tck, tms, tdo);
+                }
+            }
+        }
+    }
+
+    /* Phase 2: disambiguate TDI among the remaining candidates. */
+    if (found) {
+        for (size_t i = 0; i < n; i++) {
+            gpio_num_t tdi = candidates[i];
+            if (tdi == out->tck || tdi == out->tms || tdi == out->tdo) continue;
+            gpio_num_t drv[3] = { out->tck, out->tms, tdi };
+            ad_setup(candidates, n, drv, 3);
+            trials++;
+            if (ad_bypass_echo(out->tck, out->tms, tdi, out->tdo)) {
+                out->tdi = tdi; out->tdi_found = true;
+                ESP_LOGI(TAG, "  TDI=%d (BYPASS echo confirmed)", tdi);
+                break;
+            }
+        }
+    }
+
+    /* Release: leave all candidates as pulled-up inputs (benign). */
+    for (size_t i = 0; i < n; i++) {
+        gpio_set_direction(candidates[i], GPIO_MODE_INPUT);
+        gpio_set_pull_mode(candidates[i], GPIO_PULLUP_ONLY);
+    }
+    out->trials = trials;
+
+    if (!found) {
+        ESP_LOGW(TAG, "Pin autodetect: no IDCODE in %d permutations", trials);
+        return ESP_ERR_NOT_FOUND;
+    }
+    return ESP_OK;
+}
+
+/* =========================================================================
  * Public API: Low-level diagnostics
  * ======================================================================= */
 
@@ -1055,6 +1234,16 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
     uint32_t tile_limit_mask = (h->chip.num_tiles > 0)
         ? ((1u << h->chip.num_tiles) - 1u) : 0xFu;
 
+    /* Total loadable bytes (within the device's tile count) for progress. */
+    size_t load_total = 0, load_done = 0;
+    for (size_t i = 0; i < parsed.num_steps; i++) {
+        const xe_step_t *st = &parsed.steps[i];
+        if (st->op != XE_OP_LOAD || !(tile_limit_mask & (1u << st->tile))) continue;
+        for (uint16_t s = 0; s < st->seg_count; s++)
+            load_total += parsed.segments[st->seg_first + s].filesz;
+    }
+    if (load_total == 0) load_total = 1;
+
     for (size_t i = 0; i < parsed.num_steps; i++) {
         const xe_step_t *step = &parsed.steps[i];
 
@@ -1072,6 +1261,8 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
             for (uint16_t s = 0; s < step->seg_count; s++) {
                 err = load_segment(h, &parsed.segments[step->seg_first + s]);
                 if (err != ESP_OK) return err;
+                load_done += parsed.segments[step->seg_first + s].filesz;
+                report_progress(h, "Loading to RAM", load_done, load_total);
             }
             if (step->tile < XE_MAX_TILES)
                 cur_entry[step->tile] = step->entry;
@@ -1237,12 +1428,19 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
     }
     ESP_LOGI(TAG, "Stub ready, streaming flash data...");
 
-    /* Erase the sectors the image covers */
+    /* Combined progress across erase + write so the bar advances monotonically
+     * from 0 to 100 over the whole operation. */
     size_t num_sectors = (flash_image_len + sector_size - 1) / sector_size;
+    size_t num_chunks  = (flash_image_len + chunk_size  - 1) / chunk_size;
+    size_t total_units = num_sectors + num_chunks;
+    size_t done = 0;
+
+    /* Erase the sectors the image covers */
     for (size_t s = 0; s < num_sectors; s++) {
         err = stub_command(h, tile, STUB_CMD_ERASE,
                            (uint32_t)(s * sector_size), 0, 5000);
         if (err != ESP_OK) return err;
+        report_progress(h, "Erasing flash", ++done, total_units);
         if ((s & 0xF) == 0)
             ESP_LOGI(TAG, "Erasing: %zu/%zu sectors", s + 1, num_sectors);
     }
@@ -1265,6 +1463,7 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
                            (uint32_t)offset, (uint32_t)this_chunk, 5000);
         if (err != ESP_OK) return err;
 
+        report_progress(h, "Writing flash", ++done, total_units);
         if ((offset & 0xFFFF) == 0 || offset + this_chunk >= flash_image_len)
             ESP_LOGI(TAG, "Writing: %zu/%zu bytes",
                      offset + this_chunk, flash_image_len);
@@ -1491,6 +1690,7 @@ esp_err_t xmos_spi_flash_program(xmos_jtag_handle_t h,
             return ESP_ERR_TIMEOUT;
         }
 
+        report_progress(h, "Writing flash", off + page_len, image_len);
         if ((off & 0xFFFF) == 0) {
             ESP_LOGI(TAG, "Writing: %zu / %zu bytes", off, image_len);
         }

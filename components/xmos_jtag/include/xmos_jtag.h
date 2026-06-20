@@ -73,6 +73,24 @@ esp_err_t xmos_jtag_init(const xmos_jtag_pins_t *pins,
 void xmos_jtag_deinit(xmos_jtag_handle_t handle);
 
 /* -------------------------------------------------------------------------
+ * Progress reporting (optional)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Progress callback for long-running operations (flash program, RAM load).
+ * @param stage  short human-readable phase label ("Erasing", "Writing", ...)
+ * @param done   units completed so far (monotonic within an operation)
+ * @param total  total units; @p done == @p total means complete
+ * @param ctx    user pointer passed to xmos_jtag_set_progress_cb()
+ */
+typedef void (*xmos_progress_cb_t)(const char *stage, size_t done,
+                                   size_t total, void *ctx);
+
+/** Install (or clear, with cb=NULL) a progress callback on the handle. */
+void xmos_jtag_set_progress_cb(xmos_jtag_handle_t handle,
+                               xmos_progress_cb_t cb, void *ctx);
+
+/* -------------------------------------------------------------------------
  * JTAG chain scan
  * ---------------------------------------------------------------------- */
 
@@ -102,6 +120,44 @@ typedef struct {
  */
 esp_err_t xmos_jtag_scan_chain(xmos_jtag_handle_t handle,
                                jtag_chain_t *chain);
+
+/* -------------------------------------------------------------------------
+ * Pin auto-detection
+ * ---------------------------------------------------------------------- */
+
+/** Result of xmos_jtag_autodetect_pins(). */
+typedef struct {
+    bool       found;        /**< a TCK/TMS/TDO combo produced a valid IDCODE */
+    bool       tdi_found;    /**< TDI was disambiguated via a BYPASS echo test */
+    gpio_num_t tck;
+    gpio_num_t tms;
+    gpio_num_t tdi;          /**< GPIO_NUM_NC if not disambiguated */
+    gpio_num_t tdo;
+    uint32_t   idcode;       /**< IDCODE read with the detected mapping */
+    int        trials;       /**< permutations tested */
+} xmos_pinmap_t;
+
+/**
+ * Brute-force the JTAG pin mapping among a set of candidate GPIOs.
+ *
+ * Tries each ordered (TCK,TMS,TDO) permutation and looks for a valid IEEE
+ * 1149.1 IDCODE (LSB set, not all-0/all-1); then disambiguates TDI with a
+ * BYPASS echo test.  Non-driven candidates are held as pulled-up inputs, so
+ * active-low TRST/SRST among them stay deasserted.
+ *
+ * SAFETY: this drives candidate pins that might be a target *output* for brief
+ * periods -- there is no series resistance in software.  It is low-frequency
+ * and short, but for a fully unknown target, series resistors on the probe
+ * wires are the only truly safe approach.  Does not use the configured
+ * transport; reconfigures the GPIOs directly.
+ *
+ * @param candidates  array of candidate GPIOs (3..8; need >=4 to find TDI)
+ * @param n           number of candidates
+ * @param out         receives the detected mapping
+ * @return ESP_OK if a working TCK/TMS/TDO was found, ESP_ERR_NOT_FOUND otherwise
+ */
+esp_err_t xmos_jtag_autodetect_pins(const gpio_num_t *candidates, size_t n,
+                                    xmos_pinmap_t *out);
 
 /* -------------------------------------------------------------------------
  * Device identification (XMOS-specific)
