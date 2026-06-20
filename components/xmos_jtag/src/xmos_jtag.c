@@ -583,13 +583,37 @@ esp_err_t xmos_jtag_identify(xmos_jtag_handle_t h,
      * even when the tile path (which debug entry, memory and flash all use)
      * works fine, so a SSWITCH=0 here is NOT a failure. */
     uint32_t ps_id = 0;
+    bool tile0_ok = false;
     if (xmos_jtag_read_reg(h, 0, XMOS_PSWITCH_DEVICE_ID0, &ps_id) == ESP_OK) {
-        bool dead = (ps_id == 0 || ps_id == 0xFFFFFFFFu);
+        tile0_ok = (ps_id != 0 && ps_id != 0xFFFFFFFFu);
         ESP_LOGI(TAG, "Mux-open self-test: tile0 PSWITCH device-id (reg 0x0) "
                  "= 0x%08lx  %s", (unsigned long)ps_id,
-                 dead ? "<-- xCORE register access NOT working"
-                      : "(xCORE register access OK)");
+                 tile0_ok ? "(xCORE register access OK)"
+                          : "<-- xCORE register access NOT working");
     }
+
+    /* Probe the real tile count.  The IDCODE can't distinguish a single-tile
+     * XU208 from a dual-tile XU216 (both read 0x5633), so num_tiles above is
+     * only the datasheet maximum.  Count contiguous tiles whose PSWITCH
+     * device-id reads back valid -- an absent tile's mux selects nothing and
+     * reads 0/0xFFFFFFFF.  Loading firmware to a tile that isn't there is the
+     * "Tile N failed to enter debug mode" failure. */
+    if (tile0_ok && chip_info->num_tiles > 1) {
+        uint8_t found = 1;
+        for (uint8_t t = 1; t < chip_info->num_tiles; t++) {
+            uint32_t id = 0;
+            if (xmos_jtag_read_reg(h, t, XMOS_PSWITCH_DEVICE_ID0, &id) == ESP_OK
+                && id != 0 && id != 0xFFFFFFFFu)
+                found = t + 1;          /* tiles are numbered contiguously */
+            else
+                break;
+        }
+        if (found != chip_info->num_tiles)
+            ESP_LOGI(TAG, "Tile probe: %u of up to %u tile(s) respond",
+                     found, chip_info->num_tiles);
+        chip_info->num_tiles = found;
+    }
+
     /* Leave the chain closed for whatever runs next */
     mux_select(h, XMOS_MUX_NC);
     h->transport->reset(h->transport);
@@ -1024,10 +1048,22 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
     uint32_t cur_entry[XE_MAX_TILES] = {0};
     bool first_contact = true;
 
+    /* The XE may target more tiles than the device has (e.g. a stub built for
+     * a 2-tile XN run on a single-tile XU208 -- the extra tile holds only an
+     * inert runtime kernel).  Trying to enter debug on a tile that isn't there
+     * just times out, so skip any tile beyond the probed count. */
+    uint32_t tile_limit_mask = (h->chip.num_tiles > 0)
+        ? ((1u << h->chip.num_tiles) - 1u) : 0xFu;
+
     for (size_t i = 0; i < parsed.num_steps; i++) {
         const xe_step_t *step = &parsed.steps[i];
 
         if (step->op == XE_OP_LOAD) {
+            if (!(tile_limit_mask & (1u << step->tile))) {
+                ESP_LOGI(TAG, "Skipping tile %d load (device has %u tile(s))",
+                         step->tile, h->chip.num_tiles);
+                continue;
+            }
             err = halt_tile_for_load(h, step->tile, &first_contact);
             if (err != ESP_OK) return err;
 
@@ -1046,7 +1082,7 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
             }
             /* Resume every tile in the batch first... */
             for (int t = 0; t < XE_MAX_TILES; t++) {
-                if (!(step->run_mask & (1u << t))) continue;
+                if (!(step->run_mask & tile_limit_mask & (1u << t))) continue;
                 ESP_LOGI(TAG, "%s tile %d at 0x%08lx",
                          step->run_wait ? "Call" : "Goto", t,
                          (unsigned long)cur_entry[t]);
@@ -1058,7 +1094,7 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
             /* ...then, for CALL, wait for each to return to debug. */
             if (step->run_wait) {
                 for (int t = 0; t < XE_MAX_TILES; t++) {
-                    if (!(step->run_mask & (1u << t))) continue;
+                    if (!(step->run_mask & tile_limit_mask & (1u << t))) continue;
                     err = wait_debug_reentry(h, t, 3000);
                     if (err != ESP_OK) return err;
                 }
