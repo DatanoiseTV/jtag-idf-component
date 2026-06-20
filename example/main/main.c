@@ -22,6 +22,7 @@
 #include "esp_netif.h"
 #include "esp_http_server.h"
 #include "nvs_flash.h"
+#include "mdns.h"
 #include "soc/soc_caps.h"
 #include "xmos_jtag.h"
 #include "xmos_xe.h"
@@ -41,6 +42,10 @@
 #endif
 
 static const char *TAG = "xmos_web";
+
+/* mDNS hostname: the device is reachable at http://xmflash.local and is the
+ * default host of the `xmflash` CLI (tools/xmflash.py). */
+#define MDNS_HOSTNAME  "xmflash"
 
 /* -------------------------------------------------------------------------
  * Configuration
@@ -231,6 +236,23 @@ static void net_init_ethernet(void)
     ESP_LOGI(TAG, "Ethernet started (IP101GRI RMII). Waiting for DHCP...");
 }
 #endif
+
+/* Advertise the device over mDNS so it is reachable by name (xmflash.local)
+ * regardless of the DHCP-assigned address.  Works on the WiFi SoftAP and on
+ * Ethernet; the responder tracks IP changes automatically. */
+static void start_mdns(void)
+{
+    esp_err_t err = mdns_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "mDNS init failed: %s (name access disabled)",
+                 esp_err_to_name(err));
+        return;
+    }
+    mdns_hostname_set(MDNS_HOSTNAME);
+    mdns_instance_name_set("XMOS JTAG Web Flasher");
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    ESP_LOGI(TAG, "mDNS started: http://%s.local", MDNS_HOSTNAME);
+}
 
 /* -------------------------------------------------------------------------
  * HTTP handlers
@@ -684,5 +706,6 @@ void app_main(void)
     ESP_LOGW(TAG, "No network interface available on this chip.");
 #endif
 
+    start_mdns();
     start_webserver();
 }

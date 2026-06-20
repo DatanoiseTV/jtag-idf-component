@@ -247,6 +247,9 @@ idf.py set-target esp32p4 && idf.py build flash monitor
 Pin assignments are per target in [`example/main/main.c`](example/main/main.c)
 (the `PIN_*` defines). Edit them there to match your wiring.
 
+The device also advertises itself over mDNS, so once it is on the network it is
+reachable by name at **http://xmflash.local** regardless of the DHCP address.
+
 **What the UI does:**
 
 | Section | |
@@ -256,6 +259,22 @@ Pin assignments are per target in [`example/main/main.c`](example/main/main.c)
 | **Boundary Scan** | Live pin-state capture with hex + bit view, auto-refresh |
 | **Firmware** | Drag-and-drop `.xe` / `.bin` / `.svf`, shows file details |
 | **Program** | Select target (XMOS / iCE40 / SVF) and method (RAM / Flash / CRAM), one-click go |
+
+### Remote CLI
+
+Everything the UI does is also scriptable over the same HTTP API with
+[`tools/xmflash.py`](tools/README.md) -- a zero-dependency Python CLI:
+
+```sh
+tools/xmflash.py identify                  # defaults to xmflash.local (mDNS)
+tools/xmflash.py --host 192.168.1.23 scan
+tools/xmflash.py write-flash image.bin     # program the XMOS boot flash
+tools/xmflash.py load-ram firmware.xe      # load + run from RAM
+```
+
+Host/timeout/poll resolve from CLI flags, `XMFLASH_*` environment variables, or
+a config file; the host may be an IP, a DNS name, or an mDNS `.local` name
+resolved by the OS. See [`tools/README.md`](tools/README.md).
 
 ---
 
