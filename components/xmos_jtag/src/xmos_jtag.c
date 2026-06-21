@@ -1269,7 +1269,9 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
                 err = load_segment(h, &parsed.segments[step->seg_first + s]);
                 if (err != ESP_OK) return err;
                 load_done += parsed.segments[step->seg_first + s].filesz;
-                report_progress(h, "Loading to RAM", load_done, load_total);
+                /* Neutral label: load_xe also loads the flash stub, where
+                 * "Loading to RAM" would wrongly read as a RAM-load op. */
+                report_progress(h, "Loading code", load_done, load_total);
             }
             if (step->tile < XE_MAX_TILES)
                 cur_entry[step->tile] = step->entry;
@@ -1328,20 +1330,30 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
  * flash_stub/ (build it with the XMOS toolchain; not shipped prebuilt).
  * ======================================================================= */
 
-/* Stub mailbox commands (host -> stub, via DBG_COMMAND) */
+/* Stub mailbox commands (host -> stub) */
 #define STUB_CMD_NONE       0x00
 #define STUB_CMD_WRITE      0x01
 #define STUB_CMD_ERASE      0x02
 #define STUB_CMD_DONE       0xFF
 
-/* Stub status values (stub -> host, via DBG_STATUS) */
+/* Stub status values (stub -> host) */
+#define STUB_STATUS_ALIVE   0x55   /* set before flash init (liveness marker) */
 #define STUB_STATUS_READY   0x01
 #define STUB_STATUS_BUSY    0x02
 #define STUB_STATUS_OK      0x03
 #define STUB_STATUS_ERROR   0x80
 
-/* Shared data buffer, relative to the tile RAM base. Must match the stub. */
-#define STUB_DATA_BUF_OFFSET  0x10000u
+/* RAM mailbox layout (words), at ram_base + STUB_MBOX_OFFSET.  The host
+ * reads/writes these via the JTAG debug *memory* interface while the core is
+ * briefly halted; the running stub reads/writes the same RAM with ordinary
+ * loads/stores.  This replaces the PSWITCH debug-scratch (getps/setps) mailbox,
+ * which a normally-running core cannot reach.  MUST match flash_stub.xc. */
+#define STUB_MBOX_OFFSET    0x10000u
+#define STUB_OFF_STATUS     0x00u
+#define STUB_OFF_COMMAND    0x04u
+#define STUB_OFF_ARG0       0x08u   /* flash address */
+#define STUB_OFF_ARG1       0x0Cu   /* byte count */
+#define STUB_OFF_DATA       0x10u   /* page buffer (256 bytes) */
 
 /* SRAM base for the detected family.  XS1/XS2 map RAM at 0x40000; xcore.ai
  * (XS3) maps it at 0x80000, so the stub data buffer has to track the family
@@ -1351,61 +1363,63 @@ static uint32_t ram_base_for_family(xmos_family_t fam)
     return (fam == XMOS_FAMILY_XS3) ? XMOS_XS3_RAM_BASE : XMOS_XS2_RAM_BASE;
 }
 
-static esp_err_t wait_stub_status(xmos_jtag_handle_t h, int tile,
+/* Poll the stub's STATUS word in RAM.  Reading RAM needs the core halted, so
+ * each poll halts, reads, and resumes -- the stub keeps running between polls
+ * (halting it mid-flash-op is safe; the flash chip finishes autonomously). */
+static esp_err_t wait_stub_status(xmos_jtag_handle_t h, int tile, uint32_t mbox,
                                   uint32_t expected, int timeout_ms)
 {
     int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    uint32_t status = 0;
-    bool first = true;
+    uint32_t status = 0xFFFFFFFFu;
 
     while (esp_timer_get_time() < deadline) {
-        esp_err_t err = reg_access(h, tile, XMOS_PSWITCH_DBG_STATUS,
-                                   0, &status, false);
+        esp_err_t err = enter_debug(h, tile);
         if (err != ESP_OK) return err;
-
-        /* The switch-register read pipeline is delayed by one, so the first
-         * read returns the previous transaction's (stale) value -- skip it. */
-        if (first) { first = false; continue; }
+        err = dbg_mem_read_word(h, tile, mbox + STUB_OFF_STATUS, &status);
+        esp_err_t e2 = exit_debug(h, tile);
+        if (err != ESP_OK) return err;
+        if (e2 != ESP_OK) return e2;
 
         if (status == expected) return ESP_OK;
         if (status >= STUB_STATUS_ERROR) {
-            ESP_LOGE(TAG, "Stub error: 0x%08lx", (unsigned long)status);
+            ESP_LOGE(TAG, "Stub reported error 0x%08lx", (unsigned long)status);
             return ESP_FAIL;
         }
-
-        h->transport->idle(h->transport, 100);
+        h->transport->idle(h->transport, 200);
     }
 
-    /* Log the raw value so we can tell apart "mailbox never written" (0x0) from
-     * "stub alive but a later phase stalled" (the 0x55 alive marker, etc.). */
+    /* Raw value tells "stub never ran / mailbox unreachable" (0x0/0xFFFFFFFF)
+     * apart from "alive but stalled" (0x55) or "stuck busy" (0x02). */
     ESP_LOGW(TAG, "stub status never reached 0x%lx (last read 0x%08lx)",
              (unsigned long)expected, (unsigned long)status);
     return ESP_ERR_TIMEOUT;
 }
 
 /*
- * Post one command to the running stub and wait for completion.
- * Halts the core to write the mailbox atomically (incl. clearing STATUS to
- * BUSY so a previous OK can't be misread), resumes, then polls STATUS.
+ * Post one command to the running stub and wait for completion.  Halts the core
+ * to write the RAM mailbox atomically (STATUS=BUSY first so a stale OK from the
+ * previous command can't be misread, then args, then COMMAND), resumes, polls.
  */
-static esp_err_t stub_command(xmos_jtag_handle_t h, int tile,
+static esp_err_t stub_command(xmos_jtag_handle_t h, int tile, uint32_t mbox,
                               uint32_t cmd, uint32_t arg0, uint32_t arg1,
                               int timeout_ms)
 {
     esp_err_t err = enter_debug(h, tile);
     if (err != ESP_OK) return err;
 
-    if ((err = reg_access(h, tile, XMOS_PSWITCH_DBG_STATUS, STUB_STATUS_BUSY, NULL, true)) ||
-        (err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG0, arg0, NULL, true)) ||
-        (err = reg_access(h, tile, XMOS_PSWITCH_DBG_ARG1, arg1, NULL, true)) ||
-        (err = reg_access(h, tile, XMOS_PSWITCH_DBG_COMMAND, cmd, NULL, true)))
+    if ((err = dbg_mem_write_word(h, tile, mbox + STUB_OFF_STATUS, STUB_STATUS_BUSY)) ||
+        (err = dbg_mem_write_word(h, tile, mbox + STUB_OFF_ARG0, arg0)) ||
+        (err = dbg_mem_write_word(h, tile, mbox + STUB_OFF_ARG1, arg1)) ||
+        (err = dbg_mem_write_word(h, tile, mbox + STUB_OFF_COMMAND, cmd))) {
+        exit_debug(h, tile);
         return err;
+    }
 
     err = exit_debug(h, tile);
     if (err != ESP_OK) return err;
 
     if (cmd == STUB_CMD_DONE) return ESP_OK;   /* no completion to await */
-    return wait_stub_status(h, tile, STUB_STATUS_OK, timeout_ms);
+    return wait_stub_status(h, tile, mbox, STUB_STATUS_OK, timeout_ms);
 }
 
 esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
@@ -1422,7 +1436,8 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
 
     esp_err_t err;
     int tile = 0;
-    uint32_t buf_addr = ram_base_for_family(h->chip.family) + STUB_DATA_BUF_OFFSET;
+    uint32_t mbox = ram_base_for_family(h->chip.family) + STUB_MBOX_OFFSET;
+    uint32_t buf_addr = mbox + STUB_OFF_DATA;
     const size_t sector_size = 4096;
     const size_t chunk_size  = 256;   /* SPI flash page size */
 
@@ -1437,7 +1452,7 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
     }
 
     /* Wait for the stub to initialise the flash and signal ready */
-    err = wait_stub_status(h, tile, STUB_STATUS_READY, 5000);
+    err = wait_stub_status(h, tile, mbox, STUB_STATUS_READY, 5000);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Flash stub did not become ready");
         return err;
@@ -1453,7 +1468,7 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
 
     /* Erase the sectors the image covers */
     for (size_t s = 0; s < num_sectors; s++) {
-        err = stub_command(h, tile, STUB_CMD_ERASE,
+        err = stub_command(h, tile, mbox, STUB_CMD_ERASE,
                            (uint32_t)(s * sector_size), 0, 5000);
         if (err != ESP_OK) return err;
         report_progress(h, "Erasing flash", ++done, total_units);
@@ -1475,7 +1490,7 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
         err = exit_debug(h, tile);
         if (err != ESP_OK) return err;
 
-        err = stub_command(h, tile, STUB_CMD_WRITE,
+        err = stub_command(h, tile, mbox, STUB_CMD_WRITE,
                            (uint32_t)offset, (uint32_t)this_chunk, 5000);
         if (err != ESP_OK) return err;
 
@@ -1486,7 +1501,7 @@ esp_err_t xmos_jtag_program_flash(xmos_jtag_handle_t h,
     }
 
     /* Tell the stub we're done (it sets QE and halts) */
-    err = stub_command(h, tile, STUB_CMD_DONE, 0, 0, 1000);
+    err = stub_command(h, tile, mbox, STUB_CMD_DONE, 0, 0, 1000);
     if (err != ESP_OK) return err;
 
     ESP_LOGI(TAG, "Flash programming complete: %zu bytes", flash_image_len);

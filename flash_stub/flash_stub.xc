@@ -45,44 +45,38 @@
 #include <platform.h>
 #include "quad_spi_flash.h"
 
-/* --- Mailbox: per-tile debug scratch registers ---------------------------
- * These are the SAME physical registers the host writes over JTAG (PSWITCH
- * scratch reg 0x20+n, see xmos_regs.h), but getps/setps on the running core
- * address them in the processor-status space as resource IDs, NOT by the bare
- * switch number: scratch[n] = ((0x20+n) << 8) | 0x0b  (= XS1_PS_DBG_SCRATCH_n
- * in <xs1.h>).  Using 0x20..0x23 here reads/writes the wrong PS register, so
- * the mailbox never syncs and the host times out at "stub did not become
- * ready". They MUST be the 0x..0b IDs below. */
-#define DBG_STATUS    0x200b   /* scratch[0]  stub -> host */
-#define DBG_COMMAND   0x210b   /* scratch[1]  host -> stub */
-#define DBG_ARG0      0x220b   /* scratch[2]  address */
-#define DBG_ARG1      0x230b   /* scratch[3]  byte count */
+/* --- RAM mailbox -----------------------------------------------------------
+ * A normally-running core can't reach the JTAG-written PSWITCH debug-scratch
+ * registers (getps/setps don't alias them), so the mailbox lives in plain tile
+ * RAM: the host reads/writes it over the JTAG debug *memory* interface while
+ * the core is briefly halted, and this stub reads/writes the same words with
+ * ordinary volatile loads/stores.
+ *
+ * Base = RAM_BASE + 0x10000 (must equal STUB_MBOX_OFFSET on the host).
+ * RAM_BASE is arch-specific: xCORE-200 (XS2) maps SRAM at 0x40000, xcore.ai
+ * (XS3) at 0x80000.
+ *   words: [0]=STATUS  [1]=COMMAND  [2]=ARG0(addr)  [3]=ARG1(nbytes)  [4..]=DATA */
+#if defined(__XS3A__)
+#define MBOX_ADDR  0x00090000
+#else
+#define MBOX_ADDR  0x00050000
+#endif
+#define M_STATUS   0
+#define M_COMMAND  1
+#define M_ARG0     2
+#define M_ARG1     3
+#define M_DATA     4   /* page buffer starts here (256 bytes) */
 
 #define CMD_NONE   0x00
 #define CMD_WRITE  0x01
 #define CMD_ERASE  0x02
 #define CMD_DONE   0xFF
 
+#define ST_ALIVE   0x55   /* set before flash init -- liveness marker */
 #define ST_READY   0x01
 #define ST_BUSY    0x02
 #define ST_OK      0x03
 #define ST_ERROR   0x80
-
-/* Shared data buffer in tile RAM. Must equal RAM_BASE + STUB_DATA_BUF_OFFSET
- * on the host and be reserved by the linker so it does not overlap this
- * program.  RAM_BASE is architecture-specific: xCORE-200 (XS2) maps SRAM at
- * 0x40000, xcore.ai (XS3) at 0x80000, so the buffer must track the arch or it
- * lands outside valid RAM.
- *   XS2: 0x40000 + 0x10000 = 0x00050000
- *   XS3: 0x80000 + 0x10000 = 0x00090000
- * NOTE: flash_stub_xs3.xe shipped in example/main/ was built BEFORE this fix
- * (DATA_BUF_ADDR was a flat 0x50000) and must be rebuilt to program XS3 flash;
- * flash_stub_xs2.xe is correct as-is. */
-#if defined(__XS3A__)
-#define DATA_BUF_ADDR  0x00090000
-#else
-#define DATA_BUF_ADDR  0x00050000
-#endif
 
 /* QSPI boot ports -- IDENTICAL on xCORE-200 (XU208/XUF208/XUF216) and
  * xcore.ai (XU316): AN00185 §2.3 / XU208 §8.1 / XU316 boot section, and
@@ -94,74 +88,63 @@ on tile[0]: quad_spi_ports qspi = {
     XS1_CLKBLK_1
 };
 
-/* Mailbox helpers. getps/setps reach the local tile's debug scratch regs;
- * see the header note -- confirm the register space for your tools. */
-static inline unsigned mbox_get(unsigned reg)        { return getps(reg); }
-static inline void     mbox_set(unsigned reg, unsigned v) { setps(reg, v); }
-
-#define ST_ALIVE   0x55   /* diagnostic: set before flash init, proves the
-                             mailbox (setps) reaches the host */
-
 int main(void)
 {
-    /* Write an "alive" marker FIRST -- before touching the flash. If the host
-     * times out seeing 0x55, the stub is running and the mailbox works but
-     * flash init stalled; if it sees 0x00, setps/the scratch mailbox isn't
-     * reaching the host at all. */
-    mbox_set(DBG_STATUS, ST_ALIVE);
+    unsafe {
+        /* The mailbox is plain RAM; volatile so the poll loop re-reads it. */
+        volatile unsigned * unsafe mb = (volatile unsigned * unsafe)MBOX_ADDR;
 
-    /* Bring up the flash (init also issues write-enable + sets Quad-Enable
-     * and waits for idle -- see sc_flash quad_spi_flash_init). */
-    quad_spi_flash_init(qspi);
-    mbox_set(DBG_COMMAND, CMD_NONE);
-    mbox_set(DBG_STATUS,  ST_READY);
+        /* Liveness marker BEFORE touching the flash: if the host times out
+         * seeing 0x55 the stub runs and the RAM mailbox works but flash init
+         * stalled; 0x00 means the stub never ran / the mailbox isn't reaching
+         * the host. */
+        mb[M_STATUS] = ST_ALIVE;
 
-    for (;;) {
-        unsigned cmd = mbox_get(DBG_COMMAND);
-        if (cmd == CMD_NONE)
-            continue;
+        /* Bring up the flash (init issues write-enable + sets Quad-Enable and
+         * waits for idle -- see sc_flash quad_spi_flash_init). */
+        quad_spi_flash_init(qspi);
+        mb[M_COMMAND] = CMD_NONE;
+        mb[M_STATUS]  = ST_READY;
 
-        unsigned addr = mbox_get(DBG_ARG0);
+        for (;;) {
+            unsigned cmd = mb[M_COMMAND];
+            if (cmd == CMD_NONE)
+                continue;
 
-        if (cmd == CMD_ERASE) {
-            quad_spi_flash_sector_erase(qspi, addr);
-            quad_spi_wait_until_idle(qspi);
-            mbox_set(DBG_COMMAND, CMD_NONE);
-            mbox_set(DBG_STATUS,  ST_OK);
+            unsigned addr = mb[M_ARG0];
 
-        } else if (cmd == CMD_WRITE) {
-            unsigned nbytes = mbox_get(DBG_ARG1);
-            unsigned nwords = (nbytes + 3) >> 2;
-            /* quad_spi_flash_write_page() (the only write primitive this
-             * version of sc_flash actually implements -- there is no
-             * write_sub_page in quad_spi_flash.xc) always writes a full
-             * 64-word/256-byte page. Pad any short final chunk with the
-             * flash's erased-state value (0xFFFFFFFF) so a sub-page write
-             * doesn't clobber already-written bytes beyond nbytes -- the
-             * host's chunking must still align each WRITE to a page
-             * boundary (offset a multiple of 256 within the image). */
-            unsigned buf[QUAD_SPI_FLASH_BYTES_PER_PAGE / 4];
-            for (unsigned i = 0; i < QUAD_SPI_FLASH_BYTES_PER_PAGE / 4; i++)
-                buf[i] = QUAD_SPI_FLASH_ERASED;
-            unsafe {
-                unsigned * unsafe src = (unsigned * unsafe)DATA_BUF_ADDR;
+            if (cmd == CMD_ERASE) {
+                quad_spi_flash_sector_erase(qspi, addr);
+                quad_spi_wait_until_idle(qspi);
+                mb[M_COMMAND] = CMD_NONE;
+                mb[M_STATUS]  = ST_OK;
+
+            } else if (cmd == CMD_WRITE) {
+                unsigned nbytes = mb[M_ARG1];
+                unsigned nwords = (nbytes + 3) >> 2;
+                /* quad_spi_flash_write_page() always writes a full 256-byte
+                 * page, so pad a short final chunk with the erased value
+                 * (0xFFFFFFFF). The host keeps every WRITE page-aligned. */
+                unsigned buf[QUAD_SPI_FLASH_BYTES_PER_PAGE / 4];
+                for (unsigned i = 0; i < QUAD_SPI_FLASH_BYTES_PER_PAGE / 4; i++)
+                    buf[i] = QUAD_SPI_FLASH_ERASED;
                 for (unsigned i = 0; i < nwords; i++)
-                    buf[i] = src[i];
+                    buf[i] = mb[M_DATA + i];
+                quad_spi_flash_write_page(qspi, addr, buf);
+                quad_spi_wait_until_idle(qspi);
+                mb[M_COMMAND] = CMD_NONE;
+                mb[M_STATUS]  = ST_OK;
+
+            } else if (cmd == CMD_DONE) {
+                /* init() already set QE; nothing more to do. Halt. */
+                mb[M_COMMAND] = CMD_NONE;
+                mb[M_STATUS]  = ST_OK;
+                break;
+
+            } else {
+                mb[M_STATUS] = ST_ERROR;
+                break;
             }
-            quad_spi_flash_write_page(qspi, addr, buf);
-            quad_spi_wait_until_idle(qspi);
-            mbox_set(DBG_COMMAND, CMD_NONE);
-            mbox_set(DBG_STATUS,  ST_OK);
-
-        } else if (cmd == CMD_DONE) {
-            /* init() already set QE; nothing more to do. Halt. */
-            mbox_set(DBG_COMMAND, CMD_NONE);
-            mbox_set(DBG_STATUS,  ST_OK);
-            break;
-
-        } else {
-            mbox_set(DBG_STATUS, ST_ERROR);
-            break;
         }
     }
     return 0;
