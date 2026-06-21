@@ -768,6 +768,16 @@ $('btn-go').onclick = program;
 async function program() {
   if (busy) return;
   const target = progTarget, m = curMethod();
+  // Hard guard: never program without a valid file for this target, regardless
+  // of button state (defends against any stale UI / cached page).
+  const fileValid = !$('fw-info').classList.contains('hidden') &&
+    (target === 'svf' ? uploadedType === 'svf'
+                      : (uploadedType === 'xe' || uploadedType === 'elf' || uploadedType === 'bin'));
+  if (!fileValid) {
+    log('warn','Select a valid firmware file before programming ('
+        + (target==='svf' ? 'an .svf file' : 'a .xe / .elf / .bin') + ').');
+    return;
+  }
   // Guard the common file/method mismatches that boot as a broken device.
   if (target==='xmos' && m.v==='ram' && uploadedType==='bin' &&
       !confirm('This is a raw .bin, usually a FLASH image -- not a RAM program.\n'
