@@ -4,6 +4,7 @@ set(srcs
     "src/jtag_gpio.c"
     "src/svf_player.c"
     "src/ice40.c"
+    "src/swd.c"
 )
 
 set(requires
