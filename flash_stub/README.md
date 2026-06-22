@@ -105,15 +105,21 @@ to this file (or add the module to `USED_MODULES`), supply an XN for your
 board, then build for the matching architecture:
 
 ```sh
-# xCORE-200 (XU208 / XUF208 / XUF216)
-xcc flash_stub.xc quad_spi_flash.xc -target=XCORE-200-EXPLORER -o flash_stub_xs2.xe
+# xCORE-200 -- build for the SMALLEST SRAM variant you will run on
+# (XU208-128 = 128 KB), so the linker keeps the stack inside the target's
+# RAM.  A stub built for -256 puts its stack at the top of 256 KB (0x80000),
+# which is OUTSIDE a 128 KB part's RAM (ends at 0x60000) -- it then faults on
+# the first stack access and never reaches the mailbox.
+xcc flash_stub.xc quad_spi_flash.xc -target=XU208-128-TQ64-C10 -o flash_stub_xs2.xe
 
 # xcore.ai (XU316)
-xcc flash_stub.xc quad_spi_flash.xc -target=XCORE-AI-EXPLORER  -o flash_stub_xs3.xe
+xcc flash_stub.xc quad_spi_flash.xc -target=XK-EVK-XU316 -o flash_stub_xs3.xe
 ```
 
 (Use the XN that matches your board's `PORT_SQI_*` assignment; the
-defaults above are the standard `CS=1B / SCLK=1C / SIO=4B` map.) Then
+defaults above are the standard `CS=1B / SCLK=1C / SIO=4B` map.) The bundled
+`example/main/flash_stub_xs2.xe` is built for `XU208-128` so it runs on both
+128 KB and 256 KB parts. Then
 embed the resulting `.xe` (e.g. via `EMBED_FILES`) and pass its bytes to
 `xmos_jtag_program_flash()` — it loads the same way regardless of arch.
 
