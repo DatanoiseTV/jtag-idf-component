@@ -800,9 +800,10 @@ static void start_webserver(void)
  * OpenOCD remote_bitbang bridge
  *
  * Exposes the JTAG pins over TCP using OpenOCD's remote_bitbang protocol, so a
- * PC running OpenOCD drives the target through this ESP32.  This is the path to
- * use the XMOS xCORE OpenOCD fork (which supports XS1/XS2) on an iD4, or any
- * OpenOCD-supported ARM/RISC-V/FPGA target, with proven host-side tooling.
+ * PC running mainline OpenOCD drives the target through this ESP32 with proven
+ * host-side tooling -- for ARM/RISC-V/FPGA parts OpenOCD supports.  (Not for
+ * XMOS: mainline OpenOCD has no xCORE target, and XMOS's JTAG library is
+ * FTDI-only; XMOS parts use this component's native flasher.)
  *
  *   adapter driver remote_bitbang
  *   remote_bitbang host xmflash.local   ;# or the IP
