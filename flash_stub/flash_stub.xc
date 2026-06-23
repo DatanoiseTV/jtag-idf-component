@@ -46,11 +46,15 @@
 #include "quad_spi_flash.h"
 
 /* --- RAM mailbox -----------------------------------------------------------
- * A normally-running core can't reach the JTAG-written PSWITCH debug-scratch
- * registers (getps/setps don't alias them), so the mailbox lives in plain tile
- * RAM: the host reads/writes it over the JTAG debug *memory* interface while
- * the core is briefly halted, and this stub reads/writes the same words with
- * ordinary volatile loads/stores.
+ * The mailbox can't use the debug scratch registers: the XS2 ISA (sec. 17,
+ * "Initialisation and Debugging") states that when the processor is NOT in
+ * debug mode none of the debug information is readable or writable (only PC/SR
+ * for profiling).  This stub runs normally (not in debug mode), so getps/setps
+ * on the debug registers do nothing -- confirmed on hardware (the alive marker
+ * never reached the host).  So the mailbox lives in plain tile RAM: the host
+ * reads/writes it over the JTAG debug *memory* interface while the core is
+ * briefly halted, and this stub reads/writes the same words with ordinary
+ * volatile loads/stores.
  *
  * Base = RAM_BASE + 0x10000 (must equal STUB_MBOX_OFFSET on the host).
  * RAM_BASE is arch-specific: xCORE-200 (XS2) maps SRAM at 0x40000, xcore.ai

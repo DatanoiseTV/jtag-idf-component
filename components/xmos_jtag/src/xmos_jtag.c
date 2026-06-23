@@ -1346,8 +1346,10 @@ esp_err_t xmos_jtag_load_xe(xmos_jtag_handle_t h,
 /* RAM mailbox layout (words), at ram_base + STUB_MBOX_OFFSET.  The host
  * reads/writes these via the JTAG debug *memory* interface while the core is
  * briefly halted; the running stub reads/writes the same RAM with ordinary
- * loads/stores.  This replaces the PSWITCH debug-scratch (getps/setps) mailbox,
- * which a normally-running core cannot reach.  MUST match flash_stub.xc. */
+ * loads/stores.  This replaces the debug-scratch (getps/setps) mailbox: the XS2
+ * ISA (sec. 17) forbids reading/writing debug registers when the core is not in
+ * debug mode, so the running stub can't use them (hardware-confirmed).  MUST
+ * match flash_stub.xc. */
 #define STUB_MBOX_OFFSET    0x10000u
 #define STUB_OFF_STATUS     0x00u
 #define STUB_OFF_COMMAND    0x04u
