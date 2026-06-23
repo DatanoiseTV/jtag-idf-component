@@ -24,6 +24,8 @@
 #include "nvs_flash.h"
 #include "mdns.h"
 #include "soc/soc_caps.h"
+#include "driver/gpio.h"
+#include "lwip/sockets.h"
 #include "xmos_jtag.h"
 #include "xmos_xe.h"
 #include "jtag_svf.h"
@@ -795,6 +797,90 @@ static void start_webserver(void)
 }
 
 /* -------------------------------------------------------------------------
+ * OpenOCD remote_bitbang bridge
+ *
+ * Exposes the JTAG pins over TCP using OpenOCD's remote_bitbang protocol, so a
+ * PC running OpenOCD drives the target through this ESP32.  This is the path to
+ * use the XMOS xCORE OpenOCD fork (which supports XS1/XS2) on an iD4, or any
+ * OpenOCD-supported ARM/RISC-V/FPGA target, with proven host-side tooling.
+ *
+ *   adapter driver remote_bitbang
+ *   remote_bitbang host xmflash.local   ;# or the IP
+ *   remote_bitbang port 3335
+ *
+ * One client at a time; it shares the JTAG pins with the web flasher, so don't
+ * run the browser JTAG actions while OpenOCD is connected.  Needs the GPIO
+ * backend (the pins must be plain GPIO, which they are by default).
+ * ---------------------------------------------------------------------- */
+#define RBB_PORT 3335
+
+static void rbb_set_jtag(int tck, int tms, int tdi)
+{
+    gpio_set_level(s_pins.tck, tck);
+    gpio_set_level(s_pins.tms, tms);
+    gpio_set_level(s_pins.tdi, tdi);
+}
+
+static void rbb_set_reset(int trst, int srst)
+{
+    /* active-low pins: asserted (1) -> drive low */
+    if (s_pins.trst_n != GPIO_NUM_NC) gpio_set_level(s_pins.trst_n, trst ? 0 : 1);
+    if (s_pins.srst_n != GPIO_NUM_NC) gpio_set_level(s_pins.srst_n, srst ? 0 : 1);
+}
+
+static void remote_bitbang_task(void *arg)
+{
+    (void)arg;
+    int ls = socket(AF_INET, SOCK_STREAM, 0);
+    if (ls < 0) { ESP_LOGE(TAG, "rbb: socket() failed"); vTaskDelete(NULL); return; }
+    int yes = 1;
+    setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET, .sin_port = htons(RBB_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(ls, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(ls, 1) < 0) {
+        ESP_LOGE(TAG, "rbb: bind/listen failed");
+        close(ls); vTaskDelete(NULL); return;
+    }
+    ESP_LOGI(TAG, "OpenOCD remote_bitbang JTAG bridge on tcp/%d", RBB_PORT);
+
+    for (;;) {
+        struct sockaddr_in cli; socklen_t cl = sizeof(cli);
+        int cs = accept(ls, (struct sockaddr *)&cli, &cl);
+        if (cs < 0) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+        setsockopt(cs, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+        ESP_LOGI(TAG, "rbb: OpenOCD client connected");
+
+        uint8_t in[512], out[512];
+        bool running = true;
+        while (running) {
+            int n = recv(cs, in, sizeof(in), 0);
+            if (n <= 0) break;
+            int outn = 0;
+            for (int i = 0; i < n; i++) {
+                char c = (char)in[i];
+                if (c >= '0' && c <= '7') {            /* write tck/tms/tdi */
+                    int v = c - '0';
+                    rbb_set_jtag((v >> 2) & 1, (v >> 1) & 1, v & 1);
+                } else if (c == 'R') {                 /* sample TDO */
+                    out[outn++] = gpio_get_level(s_pins.tdo) ? '1' : '0';
+                    if (outn == (int)sizeof(out)) { send(cs, out, outn, 0); outn = 0; }
+                } else if (c >= 'r' && c <= 'u') {     /* set trst/srst */
+                    int v = c - 'r';
+                    rbb_set_reset((v >> 1) & 1, v & 1);
+                } else if (c == 'Q') {                 /* quit */
+                    running = false; break;
+                } /* 'B'/'b' (blink) and anything else: ignore */
+            }
+            if (outn > 0 && send(cs, out, outn, 0) < 0) break;
+        }
+        close(cs);
+        ESP_LOGI(TAG, "rbb: OpenOCD client disconnected");
+    }
+}
+
+/* -------------------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------------- */
 void app_main(void)
@@ -819,4 +905,5 @@ void app_main(void)
 
     start_mdns();
     start_webserver();
+    xTaskCreate(remote_bitbang_task, "rbb", 4096, NULL, 5, NULL);
 }

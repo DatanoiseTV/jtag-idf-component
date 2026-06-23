@@ -297,6 +297,26 @@ Host/timeout/poll resolve from CLI flags, `XMFLASH_*` environment variables, or
 a config file; the host may be an IP, a DNS name, or an mDNS `.local` name
 resolved by the OS. See [`tools/README.md`](tools/README.md).
 
+### OpenOCD bridge (remote_bitbang)
+
+The firmware also exposes the JTAG pins over TCP using OpenOCD's
+`remote_bitbang` protocol (port **3335**), so a PC running OpenOCD can drive the
+target through the ESP32 with proven host-side tooling -- including the **XMOS
+xCORE OpenOCD fork** (which supports XS1/XS2) for the iD4-class targets, or
+mainline OpenOCD for ARM/RISC-V/FPGA parts.
+
+```tcl
+adapter driver remote_bitbang
+remote_bitbang host xmflash.local   ;# or the IP
+remote_bitbang port 3335
+transport select jtag
+# ... then source your target config (e.g. the xCORE fork's xscope/xcore cfg)
+```
+
+One client at a time, and it shares the pins with the web flasher, so don't run
+the browser JTAG actions while OpenOCD is connected. Requires the GPIO backend
+(the default). It is char-per-bit over TCP, so it is slow but reliable.
+
 ---
 
 ## Wiring
